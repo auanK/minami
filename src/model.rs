@@ -16,7 +16,7 @@ pub struct ManifestResource {
     pub media_type: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SpineEntry {
     pub idref: String,
     pub linear: bool,

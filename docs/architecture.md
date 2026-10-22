@@ -13,7 +13,7 @@ The implementation follows Data-Oriented Design: explicit data structures, small
 ```text
 main
 └── cli
-    └── application::{inspect, extract}
+    └── application::{inspect, extract, audit}
         └── epub
             ├── archive
             ├── package
@@ -28,6 +28,7 @@ model and error provide shared contracts; x holds private X serialization types
 - `cli` parses `inspect`/`extract` arguments and presents results or errors; it does not parse XML or publish files itself.
 - `application::inspect` coordinates the EPUB readers and assembles the report.
 - `application::extract` snapshots the input, coordinates XHTML extraction and NCX section mapping, builds X data, and publishes the completed directory.
+- `application::audit` independently checks generated text, tokens, preserved spans, sections, and manifest coverage against each original lexical XHTML tree before serialization or publication.
 - `epub::archive` validates and reads ZIP entries without extracting them to disk.
 - `epub::package` reads `container.xml`, locates the OPF, and parses its manifest and spine.
 - `epub::navigation` parses the NCX `navMap` and validates its document targets.
@@ -62,6 +63,7 @@ Extraction reuses the same ZIP/package/navigation readers:
 original EPUB → bounded private snapshot + SHA-256
              → package/spine/NCX → manifest XHTML in deterministic order
              → lexical spans → flow groups/markers → sections and X models
+             → independent lexical coverage/integrity audit
              → complete JSON buffers → sibling staging directory → new output directory
 ```
 
@@ -98,5 +100,5 @@ Beyond the existing ZIP limits, extraction bounds each XHTML to 32 MiB, 100,000 
 - EPUB 3 is not supported.
 - XHTML extraction follows the explicit X vocabulary; unknown content is rejected. Computed CSS, layout, OCR, and linguistic meaning are not interpreted.
 - NCX `pageList` and `navList` are not included in the report.
-- Full independent extraction-coverage validation and translated-response validation are not implemented. Textual attributes, head/OPF metadata, and NCX labels remain unchanged.
+- The source mapping receives an independent coverage/integrity audit before publication. Validation of translated responses is not implemented. Textual attributes, head/OPF metadata, and NCX labels remain unchanged.
 - EPUB reconstruction and LLM integration are not implemented.

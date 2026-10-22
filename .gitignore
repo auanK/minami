@@ -27,3 +27,6 @@ rustc-ice-*.txt
 
 desktop.ini
 repomix-output.xml
+
+# Generated translation workspace
+/work/

@@ -73,6 +73,24 @@ fn c01_success_publishes_exactly_two_complete_json_files() {
 }
 
 #[test]
+fn i07_document_without_eligible_text_is_a_valid_extraction() {
+    let parent = tempfile::tempdir().unwrap();
+    let dest = parent.path().join("work");
+    let f = book("");
+    let result = extract(&f.path, &dest);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let control = json(&dest.join("control.json"));
+    let source = json(&dest.join("source.json"));
+    assert_eq!(control["documents"].as_array().unwrap().len(), 3);
+    assert_eq!(control["segments"].as_array().unwrap().len(), 0);
+    assert_eq!(source["segments"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn c02_invalid_epub_publishes_nothing() {
     let parent = tempfile::tempdir().unwrap();
     let f = Fixture::bytes(b"broken ZIP");

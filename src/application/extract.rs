@@ -7,6 +7,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use super::audit;
 use crate::{
     MinamiError, NavigationEntry,
     epub::{
@@ -28,11 +29,15 @@ pub(crate) struct Extraction {
 pub fn extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError> {
     let destination = output_destination(output)?;
     let data = extract_data(path)?;
+    publish(&destination, &data)
+}
+
+fn publish(destination: &Path, data: &Extraction) -> Result<(), MinamiError> {
     let control = encode(&data.control)?;
     let source = encode(&data.source)?;
     let parent = destination.parent().ok_or_else(|| {
         crate::epub::invalid(
-            &output.display().to_string(),
+            &destination.display().to_string(),
             "output needs a parent directory",
         )
     })?;
@@ -42,12 +47,12 @@ pub fn extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError> {
         .map_err(|e| {
             io_error(
                 "creating staging directory",
-                &output.display().to_string(),
+                &destination.display().to_string(),
                 e,
             )
         })?;
     let stage = write_staged(stage, &control, &source)?;
-    publish_ready(stage, &destination)
+    publish_ready(stage, destination)
 }
 
 fn output_destination(output: &Path) -> Result<PathBuf, MinamiError> {
@@ -163,6 +168,26 @@ pub(crate) fn extract_data(path: &Path) -> Result<Extraction, MinamiError> {
     from_snapshot(file, digest, &path.display().to_string())
 }
 
+#[cfg(test)]
+fn extract_data_with(
+    path: &Path,
+    tamper: impl FnMut(&mut Extraction, usize),
+) -> Result<Extraction, MinamiError> {
+    let (file, digest) = snapshot(path)?;
+    from_snapshot_with(file, digest, &path.display().to_string(), tamper)
+}
+
+#[cfg(test)]
+fn extract_epub_with(
+    path: &Path,
+    output: &Path,
+    tamper: impl FnMut(&mut Extraction, usize),
+) -> Result<(), MinamiError> {
+    let destination = output_destination(output)?;
+    let data = extract_data_with(path, tamper)?;
+    publish(&destination, &data)
+}
+
 fn io_error(operation: &'static str, resource: &str, source: io::Error) -> MinamiError {
     MinamiError::Io {
         operation,
@@ -271,6 +296,15 @@ fn sections(
 }
 
 fn from_snapshot(file: File, digest: String, resource: &str) -> Result<Extraction, MinamiError> {
+    from_snapshot_with(file, digest, resource, |_, _| {})
+}
+
+fn from_snapshot_with(
+    file: File,
+    digest: String,
+    resource: &str,
+    mut tamper: impl FnMut(&mut Extraction, usize),
+) -> Result<Extraction, MinamiError> {
     let extraction_id = hex(&Sha256::digest(format!(
         "minami-x\n{}\n{}\n{digest}\n",
         x::VERSION,
@@ -291,7 +325,7 @@ fn from_snapshot(file: File, digest: String, resource: &str) -> Result<Extractio
                 package_path,
                 ncx_path: package.ncx_path,
             },
-            spine: package.spine,
+            spine: package.spine.clone(),
             documents: Vec::new(),
             navigation,
             sections: Vec::new(),
@@ -367,6 +401,10 @@ fn from_snapshot(file: File, digest: String, resource: &str) -> Result<Extractio
                 limit: "200000 X records or 64 MiB editable text",
             });
         }
+        let document_index = result.control.documents.len();
+        let section_start = result.control.sections.len();
+        let segment_start = result.control.segments.len();
+        let preserved_start = result.control.preserved.len();
         let body = doc.nodes[doc.body]
             .element()
             .ok_or_else(|| crate::epub::invalid(&resource.path, "missing body"))?;
@@ -415,7 +453,26 @@ fn from_snapshot(file: File, digest: String, resource: &str) -> Result<Extractio
                 range: p.range,
                 reason: p.reason,
             }));
+        tamper(&mut result, document_index);
+        audit::document(
+            &doc,
+            &resource.path,
+            audit::Records {
+                document: &result.control.documents[document_index],
+                sections: &result.control.sections[section_start..],
+                segments: &result.control.segments[segment_start..],
+                source: &result.source.segments[segment_start..],
+                preserved: &result.control.preserved[preserved_start..],
+                navigation: &result.control.navigation,
+            },
+        )?;
     }
+    audit::package(
+        &package.resources,
+        &package.spine,
+        &result.control,
+        resource,
+    )?;
     Ok(result)
 }
 
@@ -465,15 +522,10 @@ fn encode_budget(value: &impl serde::Serialize, max: usize) -> Result<Vec<u8>, M
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../tests/support/mod.rs"]
-mod support;
-
-#[cfg(test)]
 mod tests {
-    use super::support::*;
     use super::*;
     use crate::{
+        application::support::*,
         epub::xhtml::ByteSpan,
         x::{Part, Token},
     };
@@ -952,5 +1004,23 @@ mod tests {
         assert_eq!(associated.len(), 1);
         assert_eq!(associated[0].navigation_positions, [0, 1]);
         assert_eq!(out.control.segments[0].section_id, associated[0].id);
+    }
+
+    #[test]
+    fn i02_i03_audit_failure_prevents_publication() {
+        let f = book("<p>Original text.</p>");
+        let parent = tempfile::tempdir().unwrap();
+        let output = parent.path().join("work");
+        let result = extract_epub_with(&f.path, &output, |data, document| {
+            if document == 2 {
+                data.source.segments[0].parts[0] = Part::Text("Changed text.".into());
+            }
+        });
+        assert!(
+            matches!(result, Err(MinamiError::InvalidReference { .. })),
+            "{result:?}"
+        );
+        assert!(!output.exists());
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 }
