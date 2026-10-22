@@ -13,7 +13,7 @@ The implementation follows Data-Oriented Design: explicit data structures, small
 ```text
 main
 └── cli
-    └── application::{inspect, extract, audit}
+    └── application::{inspect, extract, audit, batching}
         └── epub
             ├── archive
             ├── package
@@ -29,6 +29,7 @@ model and error provide shared contracts; x holds private X serialization types
 - `application::inspect` coordinates the EPUB readers and assembles the report.
 - `application::extract` snapshots the input, coordinates XHTML extraction and NCX section mapping, builds X data, and publishes the completed directory.
 - `application::audit` independently checks generated text, tokens, preserved spans, sections, and manifest coverage against each original lexical XHTML tree before serialization or publication.
+- `application::batching` partitions source segments by `control.segments[].section_id` using sequential section-order packing, computes each segment's exact pretty-JSON byte cost once, verifies linear coverage and identity, and serializes each final batch once.
 - `epub::archive` validates and reads ZIP entries without extracting them to disk.
 - `epub::package` reads `container.xml`, locates the OPF, and parses its manifest and spine.
 - `epub::navigation` parses the NCX `navMap` and validates its document targets.
@@ -64,14 +65,17 @@ original EPUB → bounded private snapshot + SHA-256
              → package/spine/NCX → manifest XHTML in deterministic order
              → lexical spans → flow groups/markers → sections and X models
              → independent lexical coverage/integrity audit
-             → complete JSON buffers → sibling staging directory → new output directory
+             → complete JSON buffers [→ section-scoped batch planning/verification]
+             → sibling staging directory → new output directory
 ```
+
+Optional batching plans at most one section per file. It preserves source order and segment identity, computes exact serialized costs including the envelope, indentation, separators, and final newline, and never splits a segment. Batches are verified before staging and serialized once; the monolithic bytes and the independent audit are unchanged.
 
 The snapshot is an automatically removed temporary file, not an extracted resource tree or persistent cache. Hashing and parsing use the same copied bytes, even if the original changes afterward. Observable source size/modification-time changes during copying cause failure. The serialized files contain no temporary paths or timestamps.
 
 XHTML tokenization operates on the original UTF-8 buffer. Only authorized `&nbsp;` references in lexical text/attribute contexts are changed to the equal-length `&#160;` in a validation copy. Comments and CDATA are untouched by that substitution. Text decoding handles numeric references and XML line endings separately, retaining original spans, including exact protected-space locations. No full-document serialization is used to recover offsets.
 
-Publishing uses a private temporary directory under the existing output parent. Both complete JSON files are written there before one native no-replace rename exposes the result. Windows uses [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) without replacement/copy flags; Linux/Android use [renameat_with](https://docs.rs/rustix/latest/rustix/fs/fn.renameat_with.html) with `NOREPLACE`. Existing files, directories, and symlinks are not replaced, including a destination appearing after preflight. Concurrent publishers cannot combine artifacts. Failed staging/publication drops only the operation's temporary resources. Abrupt termination may leave staging data; crash durability is outside this milestone.
+Publishing uses a private temporary directory under the existing output parent. All complete JSON files or batches are written there before one native no-replace rename exposes the result. Windows uses [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) without replacement/copy flags; Linux/Android use [renameat_with](https://docs.rs/rustix/latest/rustix/fs/fn.renameat_with.html) with `NOREPLACE`. Existing files, directories, and symlinks are not replaced, including a destination appearing after preflight. Concurrent publishers cannot combine artifacts. Failed staging/publication drops only the operation's temporary resources. Abrupt termination may leave staging data; crash durability is outside this milestone.
 
 ## Data Contracts
 
@@ -83,7 +87,7 @@ Publishing uses a private temporary directory under the existing output parent. 
 
 Manifest and spine order are preserved from the OPF. Navigation order follows document order in `navMap`, independent of `playOrder`. A document may have multiple navigation entries; a missing fragment remains absent.
 
-`extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError>` is the additional public application operation. It publishes `control.json` and `source.json` according to the normative [X format contract](x-format.md). X records remain private; translated-response validation and EPUB reconstruction remain future work. Inspection retains its existing contract.
+`extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError>` is the additional public application operation. It publishes `control.json` and `source.json` according to the normative [X format contract](x-format.md). `extract_epub_batched(path, output, batch_max_bytes)` keeps the same `control.json` and publishes a `batches/` directory of complete X envelopes capped by serialized bytes; it does not introduce a second format or publication mechanism. X records remain private; translated-response validation and EPUB reconstruction remain future work. Inspection retains its existing contract.
 
 ## Supported EPUB Profile
 
@@ -93,7 +97,7 @@ Extraction covers each manifest XHTML once: unique spine documents first (includ
 
 The parser rejects duplicate or unsafe paths, references that escape the EPUB root, encrypted or unsupported ZIP entries, and unsupported structural formats. ZIP and XML reads have explicit size and count limits. XML parsing does not resolve external entities or access the network. Resource bytes are checked as they are read; auxiliary manifest assets are checked for existence but are not fully inspected.
 
-Beyond the existing ZIP limits, extraction bounds each XHTML to 32 MiB, 100,000 nodes/text chunks/attributes, 256 attributes per element, and 128 XML nesting levels. Paired inline nesting is limited to 64 levels. The extraction map permits 200,000 document/section/segment/marker/part/preserved records and 64 MiB of editable text; each serialized JSON artifact is capped at 64 MiB, checked before appending to its output buffer. Limit violations fail explicitly without truncation.
+Beyond the existing ZIP limits, extraction bounds each XHTML to 32 MiB, 100,000 nodes/text chunks/attributes, 256 attributes per element, and 128 XML nesting levels. Paired inline nesting is limited to 64 levels. The extraction map permits 200,000 document/section/segment/marker/part/preserved records and 64 MiB of editable text; each serialized JSON artifact, including each batch, is capped at 64 MiB. Limit violations fail explicitly without truncation.
 
 ## Limitations
 

@@ -7,7 +7,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::audit;
+use super::{audit, batching};
 use crate::{
     MinamiError, NavigationEntry,
     epub::{
@@ -32,16 +32,61 @@ pub fn extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError> {
     publish(&destination, &data)
 }
 
+/// Extract X 1.0 files as section-scoped batches capped at a serialized byte budget.
+pub fn extract_epub_batched(
+    path: &Path,
+    output: &Path,
+    batch_max_bytes: usize,
+) -> Result<(), MinamiError> {
+    batching::validate_limit(batch_max_bytes)?;
+    let destination = output_destination(output)?;
+    let data = extract_data(path)?;
+    publish_batched(&destination, &data, batch_max_bytes)
+}
+
 fn publish(destination: &Path, data: &Extraction) -> Result<(), MinamiError> {
     let control = encode(&data.control)?;
     let source = encode(&data.source)?;
+    let stage = stage_directory(destination)?;
+    let stage = write_staged(stage, &control, &source)?;
+    publish_ready(stage, destination)
+}
+
+fn publish_batched(
+    destination: &Path,
+    data: &Extraction,
+    batch_max_bytes: usize,
+) -> Result<(), MinamiError> {
+    let control = encode(&data.control)?;
+    let plan = batching::plan(&data.control, &data.source, batch_max_bytes)?;
+    batching::verify(&data.control, &data.source, &plan)?;
+    let mut batches = Vec::with_capacity(plan.batches.len());
+    for batch in &plan.batches {
+        let bytes = batching::serialize_batch(&data.source, batch)?;
+        if bytes.len() > plan.max_bytes {
+            return Err(crate::epub::invalid(
+                "batch plan",
+                format!(
+                    "serialized batch '{}' exceeds --batch-max-bytes",
+                    batch.file_name
+                ),
+            ));
+        }
+        batches.push((batch.file_name.clone(), bytes));
+    }
+    let stage = stage_directory(destination)?;
+    let stage = write_batched_staged(stage, &control, &batches)?;
+    publish_ready(stage, destination)
+}
+
+fn stage_directory(destination: &Path) -> Result<tempfile::TempDir, MinamiError> {
     let parent = destination.parent().ok_or_else(|| {
         crate::epub::invalid(
             &destination.display().to_string(),
             "output needs a parent directory",
         )
     })?;
-    let stage = tempfile::Builder::new()
+    tempfile::Builder::new()
         .prefix(".minami-extract-")
         .tempdir_in(parent)
         .map_err(|e| {
@@ -50,9 +95,7 @@ fn publish(destination: &Path, data: &Extraction) -> Result<(), MinamiError> {
                 &destination.display().to_string(),
                 e,
             )
-        })?;
-    let stage = write_staged(stage, &control, &source)?;
-    publish_ready(stage, destination)
+        })
 }
 
 fn output_destination(output: &Path) -> Result<PathBuf, MinamiError> {
@@ -96,17 +139,41 @@ fn write_staged(
     control: &[u8],
     source: &[u8],
 ) -> Result<tempfile::TempDir, MinamiError> {
-    for (name, bytes) in [("control.json", control), ("source.json", source)] {
-        let path = stage.path().join(name);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| io_error("creating staged X artifact", &path.display().to_string(), e))?;
-        file.write_all(bytes)
-            .map_err(|e| io_error("writing staged X artifact", &path.display().to_string(), e))?;
+    write_file(&stage, Path::new("control.json"), control)?;
+    write_file(&stage, Path::new("source.json"), source)?;
+    Ok(stage)
+}
+
+fn write_batched_staged(
+    stage: tempfile::TempDir,
+    control: &[u8],
+    batches: &[(String, Vec<u8>)],
+) -> Result<tempfile::TempDir, MinamiError> {
+    write_file(&stage, Path::new("control.json"), control)?;
+    let batches_dir = stage.path().join("batches");
+    fs::create_dir(&batches_dir).map_err(|e| {
+        io_error(
+            "creating staged batches directory",
+            &batches_dir.display().to_string(),
+            e,
+        )
+    })?;
+    for (name, bytes) in batches {
+        write_file(&stage, &Path::new("batches").join(name), bytes)?;
     }
     Ok(stage)
+}
+
+fn write_file(stage: &tempfile::TempDir, relative: &Path, bytes: &[u8]) -> Result<(), MinamiError> {
+    let path = stage.path().join(relative);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| io_error("creating staged X artifact", &path.display().to_string(), e))?;
+    file.write_all(bytes)
+        .map_err(|e| io_error("writing staged X artifact", &path.display().to_string(), e))?;
+    Ok(())
 }
 
 fn publish_ready(stage: tempfile::TempDir, destination: &Path) -> Result<(), MinamiError> {
@@ -965,6 +1032,23 @@ mod tests {
         fs::write(&sentinel, b"user data").unwrap();
         assert!(matches!(
             write_staged(stage, b"control", b"source"),
+            Err(MinamiError::Io { .. })
+        ));
+        assert!(!stage_path.exists());
+        assert_eq!(fs::read(sentinel).unwrap(), b"user data");
+    }
+
+    #[test]
+    fn failed_batched_staged_write_removes_only_owned_temporary_data() {
+        let parent = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir_in(parent.path()).unwrap();
+        let stage_path = stage.path().to_owned();
+        fs::write(stage.path().join("batches"), b"blocking user data").unwrap();
+        let sentinel = parent.path().join("keep");
+        fs::write(&sentinel, b"user data").unwrap();
+        let batches = vec![("q000003-000001.json".into(), b"{}".to_vec())];
+        assert!(matches!(
+            write_batched_staged(stage, b"control", &batches),
             Err(MinamiError::Io { .. })
         ));
         assert!(!stage_path.exists());

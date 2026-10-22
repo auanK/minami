@@ -5,8 +5,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use minami::extract_epub;
-use minami::inspect_epub;
+use minami::{extract_epub, extract_epub_batched, inspect_epub};
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +27,9 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Split source segments into section-scoped JSON batches of at most this many bytes.
+        #[arg(long, value_name = "N")]
+        batch_max_bytes: Option<usize>,
     },
 }
 
@@ -35,8 +37,16 @@ pub fn run() -> ExitCode {
     let args = Args::parse();
     let result = match args.command {
         Command::Inspect { file } => inspect_epub(&file),
-        Command::Extract { file, output } => {
-            return match extract_epub(&file, &output) {
+        Command::Extract {
+            file,
+            output,
+            batch_max_bytes,
+        } => {
+            let result = match batch_max_bytes {
+                Some(limit) => extract_epub_batched(&file, &output, limit),
+                None => extract_epub(&file, &output),
+            };
+            return match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("minami: {error}");

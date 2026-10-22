@@ -1,4 +1,5 @@
 mod audit;
+mod batching;
 pub mod extract;
 pub mod inspect;
 
