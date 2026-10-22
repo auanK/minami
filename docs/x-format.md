@@ -1,14 +1,14 @@
 # X Format
 
-Status: proposed contract 1.0 for review. No X extractor, validator, or EPUB builder is implemented. The only implemented operation remains M0 inspection.
+Status: normative contract 1.0. Extraction of `control.json` and `source.json` is implemented alongside M0 inspection. Translated-response validation and EPUB reconstruction are not implemented.
 
 ## Purpose and scope
 
 X separates translation content from the information needed to put it back into an EPUB. Minami identifies and maps content; an external translator supplies text. The translator never supplies authoritative XHTML, attributes, resource paths, or reconstruction instructions.
 
-The initial serialization is JSON. The proposed extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or existing APIs. M1.1 will implement extraction, M1.2 coverage checks, and M2 translation validation and reconstruction.
+The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction; M1.2 coverage checks and M2 translation validation and reconstruction remain planned.
 
-The words **must**, **must not**, and **reject** below describe requirements for those future implementations, not current behavior.
+The words **must**, **must not**, and **reject** below define the contract for extraction and for the future coverage validator, translation validator, and builder. They do not imply that those future operations already exist.
 
 ## Files and authority
 
@@ -530,4 +530,4 @@ This is structural evidence for the proposal, not an extraction/rebuild test or 
 - The initial profile prioritizes preservation of original protected spaces over introducing new nonbreaking spaces required by a target language. U+00A0/U+2007/U+202F are forbidden in `text`; only existing atoms can represent them. A future profile may change this policy through explicit versioning.
 - Internal/external hyperlink values are preserved; complete link-semantic auditing, computed CSS visibility/generated content, CSS whitespace/layout, and visual equivalence are not guaranteed. Translation can change line wrapping and pagination. Existing executable source content is preserved, not sanitized; target prose never becomes markup.
 - No structural validator can establish translation quality, detect an intentionally mislabeled but structurally compatible sentence, prove that emphasis still surrounds the semantically corresponding words, or guarantee an anchor's exact semantic position. Anchor identity, ancestry, and placement relative to protected structural events are checked; linguistic equivalence and complete link/reference semantics are not. Linguistic review remains external.
-- Concrete parser APIs, lexical-mapping implementation, resource budgets beyond existing M0 limits, JSON Schema tooling, target-language metadata, and user-facing command syntax are implementation decisions for later milestones. They must not alter these identity/authority rules without versioning. No Rust types, dependencies, CLI commands, model orchestration, or configuration system are added in M1.0.
+- Parser APIs, lexical-mapping mechanics, and resource budgets are implementation details described in the architecture documentation. JSON Schema tooling, target-language metadata, and commands beyond extraction remain deferred. Such changes must not alter these identity/authority rules without versioning. Model orchestration and a configuration system remain outside extraction scope.

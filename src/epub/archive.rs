@@ -11,7 +11,7 @@ use super::{ambiguous, invalid, missing, unsupported};
 use crate::MinamiError;
 
 const MAX_ENTRIES: usize = 4096;
-const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_XML_BYTES: u64 = 4 * 1024 * 1024;
@@ -96,11 +96,16 @@ fn preflight(file: &mut File, resource: &str, size: u64) -> Result<(usize, u64),
 
 pub(crate) fn open(path: &Path) -> Result<EpubArchive, MinamiError> {
     let resource = path.display().to_string();
-    let mut file = File::open(path).map_err(|source| MinamiError::Io {
+    let file = File::open(path).map_err(|source| MinamiError::Io {
         operation: "opening EPUB",
         resource: resource.clone(),
         source,
     })?;
+    from_file(file, &resource)
+}
+
+pub(crate) fn from_file(mut file: File, resource: &str) -> Result<EpubArchive, MinamiError> {
+    let resource = resource.to_owned();
     let metadata = file.metadata().map_err(|source| MinamiError::Io {
         operation: "reading EPUB metadata",
         resource: resource.clone(),
@@ -234,21 +239,34 @@ impl EpubArchive {
     }
 
     pub(crate) fn read_xml(&mut self, path: &str) -> Result<String, MinamiError> {
+        self.read_utf8(path, MAX_XML_BYTES, "4 MiB per structural XML")
+    }
+
+    pub(crate) fn read_xhtml(&mut self, path: &str) -> Result<String, MinamiError> {
+        self.read_utf8(path, MAX_ENTRY_BYTES, "32 MiB per XHTML")
+    }
+
+    fn read_utf8(
+        &mut self,
+        path: &str,
+        max: u64,
+        description: &'static str,
+    ) -> Result<String, MinamiError> {
         let index = *self
             .files
             .get(path)
             .ok_or_else(|| missing(path, "ZIP entry"))?;
         let mut entry = self.zip.by_index(index).map_err(|e| zip_error(path, e))?;
-        if entry.size() > MAX_XML_BYTES {
-            return Err(limit(path, "4 MiB per structural XML"));
+        if entry.size() > max {
+            return Err(limit(path, description));
         }
         let mut bytes = Vec::new();
         (&mut entry)
-            .take(MAX_XML_BYTES + 1)
+            .take(max + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| zip_error(path, e))?;
-        if bytes.len() as u64 > MAX_XML_BYTES {
-            return Err(limit(path, "4 MiB per structural XML"));
+        if bytes.len() as u64 > max {
+            return Err(limit(path, description));
         }
         if bytes.len() as u64 != entry.size() {
             return Err(zip_error(

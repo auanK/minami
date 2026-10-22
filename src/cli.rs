@@ -5,13 +5,14 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use minami::extract_epub;
 use minami::inspect_epub;
 
 #[derive(Parser)]
 #[command(
     name = "minami",
     version,
-    about = "Read-only structural inspection of EPUB 2 books"
+    about = "Inspect EPUB 2 structure and extract external translation input"
 )]
 struct Args {
     #[command(subcommand)]
@@ -22,12 +23,27 @@ struct Args {
 enum Command {
     /// Inspect the package, reading order and NCX navigation as JSON.
     Inspect { file: PathBuf },
+    /// Extract translation input and reconstruction metadata to a new directory.
+    Extract {
+        file: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 pub fn run() -> ExitCode {
     let args = Args::parse();
     let result = match args.command {
         Command::Inspect { file } => inspect_epub(&file),
+        Command::Extract { file, output } => {
+            return match extract_epub(&file, &output) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("minami: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
     };
     let report = match result {
         Ok(report) => report,

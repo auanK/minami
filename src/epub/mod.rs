@@ -1,6 +1,8 @@
 pub(crate) mod archive;
 pub(crate) mod navigation;
 pub(crate) mod package;
+pub(crate) mod segments;
+pub(crate) mod xhtml;
 
 use roxmltree::{Document, Node, ParsingOptions};
 
