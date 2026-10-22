@@ -104,6 +104,39 @@ fn build(epub: &Path, control: &Path, translations: &[PathBuf], output: &Path) -
     command.arg("--output").arg(output).output().unwrap()
 }
 
+fn extract_batched(epub: &Path, output: &Path, limit: usize) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_minami"))
+        .arg("extract")
+        .arg(epub)
+        .arg("--output")
+        .arg(output)
+        .arg("--batch-max-bytes")
+        .arg(limit.to_string())
+        .output()
+        .unwrap()
+}
+
+fn validate(
+    epub: &Path,
+    control: &Path,
+    translations: &[PathBuf],
+    expected_batch: Option<&Path>,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_minami"));
+    command
+        .arg("validate")
+        .arg(epub)
+        .arg("--control")
+        .arg(control);
+    for translation in translations {
+        command.arg("--translation").arg(translation);
+    }
+    if let Some(batch) = expected_batch {
+        command.arg("--expected-batch").arg(batch);
+    }
+    command.output().unwrap()
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
@@ -136,6 +169,338 @@ fn resources(path: &Path) -> BTreeMap<String, Vec<u8>> {
             (name, bytes)
         })
         .collect()
+}
+
+fn m23_entries() -> Vec<Entry> {
+    let mut files = asset_entries();
+    replace(
+        &mut files,
+        BODY,
+        wrap(
+            "<h1 id='one'>Caf&#233; — 日本語</h1><p class='keep'>Before <i title='fixed'>nested <b>tags</b></i> after.</p><p>Protected <sup><a href='#empty'>1</a></sup> text <a id='empty'></a> tail <![CDATA[A < B]]><!--keep--><?keep value?></p><ul><li>First item.</li><li>Second item.</li></ul><h2 id='two'>Second section</h2><table><tbody><tr><td>Cell one.</td><td>Cell two.</td></tr></tbody></table><h2 id='three'>Third section</h2><p>Final paragraph.</p><p><svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><path d='M0 0'/></svg> Still editable.</p>",
+        ),
+    );
+    replace(
+        &mut files,
+        "OEBPS/Text/Illustrations.xhtml",
+        wrap("<p>Nonlinear note.</p>"),
+    );
+    replace(&mut files, "OEBPS/toc.ncx", NCX);
+    replace(
+        &mut files,
+        "OEBPS/content.opf",
+        OPF.replace(
+            "</manifest>",
+            "<item id='css' href='Styles/style.css' media-type='text/css'/><item id='image' href='Images/cover.png' media-type='image/png'/><item id='font' href='Fonts/font.otf' media-type='application/octet-stream'/><item id='appendix' href='Text/Appendix.xhtml' media-type='application/xhtml+xml'/><item id='diagram' href='Images/diagram.svg' media-type='image/svg+xml'/></manifest>",
+        ),
+    );
+    files.push(entry(
+        "OEBPS/Text/Appendix.xhtml",
+        wrap("<p>Outside the spine.</p>"),
+    ));
+    files.push(entry(
+        "OEBPS/Images/diagram.svg",
+        "<svg xmlns='http://www.w3.org/2000/svg'><path d='M0 0'/></svg>",
+    ));
+    files
+}
+
+#[test]
+fn m23_cli_batch_pipeline_validates_builds_reopens_and_preserves_resources() {
+    let case = Case::new(m23_entries());
+    let original_bytes = fs::read(&case.book.path).unwrap();
+    let original_resources = resources(&case.book.path);
+    let original_control = read_json(&case.control());
+    let original_source = read_json(&case.source());
+    let document_paths: std::collections::BTreeSet<_> = original_control["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|document| document["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        document_paths.len(),
+        original_control["documents"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        document_paths,
+        [
+            "OEBPS/Text/Body.xhtml",
+            "OEBPS/Text/Cover.xhtml",
+            "OEBPS/Text/Illustrations.xhtml",
+            "OEBPS/Text/Appendix.xhtml",
+        ]
+        .into_iter()
+        .collect()
+    );
+    let section_ids: std::collections::BTreeSet<_> = original_control["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|section| section["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        original_control["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|segment| section_ids.contains(segment["section_id"].as_str().unwrap()))
+    );
+
+    let batched = case.root.path().join("batched");
+    success(&extract_batched(&case.book.path, &batched, 700));
+    assert_eq!(
+        fs::read(batched.join("control.json")).unwrap(),
+        fs::read(case.control()).unwrap()
+    );
+    let mut batches: Vec<_> = fs::read_dir(batched.join("batches"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    batches.sort();
+    assert!(batches.len() > 1);
+
+    let mut combined = BTreeMap::new();
+    for path in &batches {
+        let batch = read_json(path);
+        assert_eq!(batch["extraction_id"], original_control["extraction_id"]);
+        for segment in batch["segments"].as_array().unwrap() {
+            let id = segment["id"].as_str().unwrap().to_owned();
+            assert!(combined.insert(id, segment.clone()).is_none());
+        }
+    }
+    let expected: BTreeMap<_, _> = original_source["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| (segment["id"].as_str().unwrap().to_owned(), segment.clone()))
+        .collect();
+    assert_eq!(combined, expected);
+    assert_eq!(
+        combined.len(),
+        original_control["segments"].as_array().unwrap().len()
+    );
+
+    let partial = validate(
+        &case.book.path,
+        &batched.join("control.json"),
+        std::slice::from_ref(&batches[0]),
+        Some(&batches[0]),
+    );
+    assert!(
+        partial.status.success(),
+        "{}",
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    assert!(partial.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&partial.stdout)
+            .contains("selected batch; not a complete translation")
+    );
+
+    let complete = minami::validate_epub(
+        &case.book.path,
+        &batched.join("control.json"),
+        &batches,
+        None,
+    )
+    .unwrap();
+    assert!(complete.complete);
+    assert_eq!(complete.validated_segments, combined.len());
+    let validation = validate(
+        &case.book.path,
+        &batched.join("control.json"),
+        &batches,
+        None,
+    );
+    assert!(
+        validation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validation.stderr)
+    );
+    assert!(String::from_utf8_lossy(&validation.stdout).contains("complete extraction"));
+
+    let identity = case.root.path().join("identity.epub");
+    success(&build(
+        &case.book.path,
+        &batched.join("control.json"),
+        &batches,
+        &identity,
+    ));
+    let reverse = case.root.path().join("reverse.epub");
+    let mut reversed = batches.clone();
+    reversed.reverse();
+    success(&build(
+        &case.book.path,
+        &batched.join("control.json"),
+        &reversed,
+        &reverse,
+    ));
+    assert_eq!(fs::read(&identity).unwrap(), fs::read(&reverse).unwrap());
+
+    let rebuilt_resources = resources(&identity);
+    assert_eq!(
+        original_resources.keys().collect::<Vec<_>>(),
+        rebuilt_resources.keys().collect::<Vec<_>>()
+    );
+    for (path, bytes) in &original_resources {
+        if !path.ends_with(".xhtml") {
+            assert_eq!(&rebuilt_resources[path], bytes, "{path}");
+        }
+    }
+    for path in ["OEBPS/content.opf", "OEBPS/toc.ncx"] {
+        assert_eq!(rebuilt_resources[path], original_resources[path]);
+    }
+    let identity_body = std::str::from_utf8(&rebuilt_resources[BODY]).unwrap();
+    for protected in [
+        "<h1 id='one'>",
+        "<p class='keep'>",
+        "<i title='fixed'>",
+        "<sup><a href='#empty'>",
+        "<a id='empty'></a>",
+        "<ul>",
+        "<table>",
+        "<svg xmlns='http://www.w3.org/2000/svg'",
+        "<!--keep-->",
+        "<?keep value?>",
+    ] {
+        assert!(identity_body.contains(protected), "{protected}");
+    }
+    assert_eq!(
+        minami::inspect_epub(&case.book.path).unwrap(),
+        minami::inspect_epub(&identity).unwrap()
+    );
+    let inspected = Command::new(env!("CARGO_BIN_EXE_minami"))
+        .arg("inspect")
+        .arg(&identity)
+        .output()
+        .unwrap();
+    success(&inspected);
+
+    let reopened = case.root.path().join("reopened");
+    success(
+        &Command::new(env!("CARGO_BIN_EXE_minami"))
+            .arg("extract")
+            .arg(&identity)
+            .arg("--output")
+            .arg(&reopened)
+            .output()
+            .unwrap(),
+    );
+    let reopened_control = read_json(&reopened.join("control.json"));
+    let reopened_source = read_json(&reopened.join("source.json"));
+    assert_ne!(
+        reopened_control["extraction_id"],
+        original_control["extraction_id"]
+    );
+    assert_eq!(reopened_control["spine"], original_control["spine"]);
+    assert_eq!(
+        reopened_control["navigation"],
+        original_control["navigation"]
+    );
+    assert_eq!(reopened_source["segments"], original_source["segments"]);
+    assert_eq!(fs::read(&case.book.path).unwrap(), original_bytes);
+
+    let targets = [
+        "日本語 — Olá 😀",
+        "literal <p> & still text",
+        "crème brûlée — 読みます",
+    ];
+    let mut next_target = 0;
+    let mut changed_ids = BTreeMap::new();
+    let mut responses = Vec::new();
+    for (index, batch_path) in batches.iter().enumerate() {
+        let mut response = read_json(batch_path);
+        for segment in response["segments"].as_array_mut().unwrap() {
+            let parts = segment["parts"].as_array_mut().unwrap();
+            if next_target < targets.len() && parts.len() == 1 && parts[0].get("text").is_some() {
+                let text = targets[next_target];
+                segment["parts"] = json!([{"text": text}]);
+                changed_ids.insert(segment["id"].as_str().unwrap().to_owned(), text);
+                next_target += 1;
+            }
+        }
+        let path = case.root.path().join(format!("response-{index}.json"));
+        fs::write(&path, serde_json::to_vec(&response).unwrap()).unwrap();
+        responses.push(path);
+    }
+    assert_eq!(next_target, targets.len());
+    let modified_validation = validate(
+        &case.book.path,
+        &batched.join("control.json"),
+        &responses,
+        None,
+    );
+    assert!(
+        modified_validation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&modified_validation.stderr)
+    );
+    let translated = case.root.path().join("translated.epub");
+    success(&build(
+        &case.book.path,
+        &batched.join("control.json"),
+        &responses,
+        &translated,
+    ));
+    let translated_resources = resources(&translated);
+    for (path, bytes) in &original_resources {
+        if !path.ends_with(".xhtml") {
+            assert_eq!(&translated_resources[path], bytes, "{path}");
+        }
+    }
+    assert!(
+        String::from_utf8(translated_resources[BODY].clone())
+            .unwrap()
+            .contains("literal &lt;p&gt; &amp; still text")
+    );
+    let translated_work = case.root.path().join("translated-work");
+    success(
+        &Command::new(env!("CARGO_BIN_EXE_minami"))
+            .arg("extract")
+            .arg(&translated)
+            .arg("--output")
+            .arg(&translated_work)
+            .output()
+            .unwrap(),
+    );
+    let translated_source = read_json(&translated_work.join("source.json"));
+    let translated_segments: BTreeMap<_, _> = translated_source["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| (segment["id"].as_str().unwrap().to_owned(), segment))
+        .collect();
+    for (id, text) in changed_ids {
+        assert_eq!(translated_segments[&id]["parts"], json!([{"text": text}]));
+    }
+}
+
+#[test]
+fn m23_cli_handles_unicode_input_and_publication_paths() {
+    let case = Case::body("<p>日本語 and português.</p>");
+    let directory = case.root.path().join("日本語 - tradução");
+    fs::create_dir(&directory).unwrap();
+    let epub = directory.join("livro-日本語.epub");
+    fs::copy(&case.book.path, &epub).unwrap();
+    let work = directory.join("extração");
+    success(
+        &Command::new(env!("CARGO_BIN_EXE_minami"))
+            .arg("extract")
+            .arg(&epub)
+            .arg("--output")
+            .arg(&work)
+            .output()
+            .unwrap(),
+    );
+    let output = directory.join("resultado-日本語.epub");
+    success(&build(
+        &epub,
+        &work.join("control.json"),
+        &[work.join("source.json")],
+        &output,
+    ));
+    assert_eq!(resources(&output), resources(&epub));
 }
 
 #[test]

@@ -1,6 +1,16 @@
 # Minami
 
-Minami is a Rust CLI that prepares EPUB 2 content for external translation and rebuilds books while preserving protected XHTML structure and original resources.
+Minami is an offline Rust CLI and library for inspecting, extracting, validating, and rebuilding EPUB 2 books within the supported X 1.0 XHTML profile. It prepares translation files for external tools and checks their structure before rebuilding the book.
+
+Minami does not translate text automatically, support EPUB 3, translate metadata or attributes, or guarantee translation quality. It rejects XHTML and ZIP features outside its documented profile; it does not promise compatibility with every EPUB.
+
+Install Rust 1.88 or newer, then build with:
+
+```bash
+cargo build --release --locked
+```
+
+Complete workflow:
 
 ```bash
 minami inspect book.epub
@@ -10,10 +20,4 @@ minami validate book.epub --control work/control.json --translation translated.j
 minami build book.epub --control work/control.json --translation translated.json --output translated.epub
 ```
 
-`build` validates the complete translation internally and publishes a verified EPUB to a new path. Repeat `--translation` for multiple response files. Existing destinations are never replaced.
-
-Stack: Rust · Cargo
-
-Development: [docs/development.md](docs/development.md)
-
-Architecture: [docs/architecture.md](docs/architecture.md)
+For section batches and detailed usage, limits, and supported features, see [docs/development.md](docs/development.md). The [architecture](docs/architecture.md) and [X 1.0 contract](docs/x-format.md) describe the implementation and file format.
