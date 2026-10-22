@@ -5,13 +5,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use minami::{extract_epub, extract_epub_batched, inspect_epub};
+use minami::{extract_epub, extract_epub_batched, inspect_epub, validate_epub};
 
 #[derive(Parser)]
 #[command(
     name = "minami",
     version,
-    about = "Inspect EPUB 2 structure and extract external translation input"
+    about = "Inspect EPUB 2 structure, extract translation input, and validate translated responses"
 )]
 struct Args {
     #[command(subcommand)]
@@ -31,6 +31,19 @@ enum Command {
         #[arg(long, value_name = "N")]
         batch_max_bytes: Option<usize>,
     },
+    /// Validate translated X 1.0 responses against the original EPUB.
+    Validate {
+        file: PathBuf,
+        /// Regenerated control map to compare with the selected EPUB.
+        #[arg(long, value_name = "FILE")]
+        control: PathBuf,
+        /// Translation response; repeat for multiple complete or partial files.
+        #[arg(long = "translation", value_name = "FILE", required = true)]
+        translations: Vec<PathBuf>,
+        /// Validate only the segments selected by this X envelope.
+        #[arg(long, value_name = "FILE")]
+        expected_batch: Option<PathBuf>,
+    },
 }
 
 pub fn run() -> ExitCode {
@@ -48,6 +61,36 @@ pub fn run() -> ExitCode {
             };
             return match result {
                 Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("minami: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Command::Validate {
+            file,
+            control,
+            translations,
+            expected_batch,
+        } => {
+            return match validate_epub(&file, &control, &translations, expected_batch.as_deref()) {
+                Ok(summary) => {
+                    let scope = if summary.complete {
+                        "complete extraction"
+                    } else {
+                        "selected batch; not a complete translation"
+                    };
+                    let mut stdout = io::stdout().lock();
+                    if let Err(error) = writeln!(
+                        stdout,
+                        "validated {} segments ({scope})",
+                        summary.validated_segments
+                    ) {
+                        eprintln!("minami: writing validation result: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                    ExitCode::SUCCESS
+                }
                 Err(error) => {
                     eprintln!("minami: {error}");
                     ExitCode::FAILURE

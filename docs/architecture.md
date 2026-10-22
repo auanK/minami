@@ -13,7 +13,7 @@ The implementation follows Data-Oriented Design: explicit data structures, small
 ```text
 main
 └── cli
-    └── application::{inspect, extract, audit, batching}
+    └── application::{inspect, extract, validate, audit, batching}
         └── epub
             ├── archive
             ├── package
@@ -25,10 +25,11 @@ model and error provide shared contracts; x holds private X serialization types
 ```
 
 - `main` starts the command-line application.
-- `cli` parses `inspect`/`extract` arguments and presents results or errors; it does not parse XML or publish files itself.
+- `cli` parses `inspect`/`extract`/`validate` arguments and presents results or errors; it does not parse XML or publish files itself.
 - `application::inspect` coordinates the EPUB readers and assembles the report.
 - `application::extract` snapshots the input, coordinates XHTML extraction and NCX section mapping, builds X data, and publishes the completed directory.
-- `application::audit` independently checks generated text, tokens, preserved spans, sections, and manifest coverage against each original lexical XHTML tree before serialization or publication.
+- `application::audit` independently checks generated text, tokens, preserved spans, sections, and manifest coverage against each original lexical XHTML tree before serialization or publication. It also derives immutable validation facts: XHTML ID anchors and promoted NCX boundary markers with their ancestor chains.
+- `application::validate` regenerates the extraction from the same private snapshot, strictly parses the supplied control and responses, compares the complete control map, and checks coverage, markers, atoms, XHTML anchors, NCX boundaries, text characters, and resource limits without writing files.
 - `application::batching` partitions source segments by `control.segments[].section_id` using sequential section-order packing, computes each segment's exact pretty-JSON byte cost once, verifies linear coverage and identity, and serializes each final batch once.
 - `epub::archive` validates and reads ZIP entries without extracting them to disk.
 - `epub::package` reads `container.xml`, locates the OPF, and parses its manifest and spine.
@@ -71,6 +72,22 @@ original EPUB → bounded private snapshot + SHA-256
 
 Optional batching plans at most one section per file. It preserves source order and segment identity, computes exact serialized costs including the envelope, indentation, separators, and final newline, and never splits a segment. Batches are verified before staging and serialized once; the monolithic bytes and the independent audit are unchanged.
 
+Validation is read-only and starts from the same bounded snapshot and extraction path:
+
+```text
+operator EPUB + supplied control + response envelopes
+  → one bounded private snapshot
+  → regenerate extraction and lexical validation facts
+  → compare supplied control with regenerated control as a strict JSON tree
+  → select the full control set or the verified expected-batch IDs
+  → strict UTF-8/no-BOM JSON parse, exact schema/identity, cross-file coverage
+  → marker multiplicity/topology, global atom order, XHTML anchors, NCX boundaries
+  → XML character and protected-space checks
+  → success summary (complete extraction or selected batch)
+```
+
+The control is never trusted for offsets or identities; the regenerated map is the only authority. A supplied expected batch selects IDs only after every source segment it contains is compared with the regenerated extraction. Translation files only supply editable text and existing marker IDs. All files are parsed and checked before the CLI prints a successful summary; the command writes no files and never produces an EPUB.
+
 The snapshot is an automatically removed temporary file, not an extracted resource tree or persistent cache. Hashing and parsing use the same copied bytes, even if the original changes afterward. Observable source size/modification-time changes during copying cause failure. The serialized files contain no temporary paths or timestamps.
 
 XHTML tokenization operates on the original UTF-8 buffer. Only authorized `&nbsp;` references in lexical text/attribute contexts are changed to the equal-length `&#160;` in a validation copy. Comments and CDATA are untouched by that substitution. Text decoding handles numeric references and XML line endings separately, retaining original spans, including exact protected-space locations. No full-document serialization is used to recover offsets.
@@ -87,7 +104,9 @@ Publishing uses a private temporary directory under the existing output parent. 
 
 Manifest and spine order are preserved from the OPF. Navigation order follows document order in `navMap`, independent of `playOrder`. A document may have multiple navigation entries; a missing fragment remains absent.
 
-`extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError>` is the additional public application operation. It publishes `control.json` and `source.json` according to the normative [X format contract](x-format.md). `extract_epub_batched(path, output, batch_max_bytes)` keeps the same `control.json` and publishes a `batches/` directory of complete X envelopes capped by serialized bytes; it does not introduce a second format or publication mechanism. X records remain private; translated-response validation and EPUB reconstruction remain future work. Inspection retains its existing contract.
+`extract_epub(path: &Path, output: &Path) -> Result<(), MinamiError>` publishes `control.json` and `source.json` according to the normative [X format contract](x-format.md). `extract_epub_batched(path, output, batch_max_bytes)` keeps the same `control.json` and publishes a `batches/` directory of complete X envelopes capped by serialized bytes; it does not introduce a second format or publication mechanism.
+
+`validate_epub(epub, control, translations, expected_batch) -> Result<ValidationSummary, MinamiError>` is read-only. It regenerates the extraction from a new bounded snapshot of `epub`, requires the supplied control to equal the regenerated control as a strict JSON tree, and validates one or more response envelopes against the regenerated source. Without a batch file, every extracted segment must appear exactly once across all responses. With `--expected-batch`, exactly one response is accepted and its segment set must equal the verified IDs in that batch file. `ValidationSummary { validated_segments, complete }` reports the checked count and whether the full extraction was covered; a batch run always reports `complete: false`. X records and the validated internal representation remain private. EPUB reconstruction remains future work.
 
 ## Supported EPUB Profile
 
@@ -99,10 +118,12 @@ The parser rejects duplicate or unsafe paths, references that escape the EPUB ro
 
 Beyond the existing ZIP limits, extraction bounds each XHTML to 32 MiB, 100,000 nodes/text chunks/attributes, 256 attributes per element, and 128 XML nesting levels. Paired inline nesting is limited to 64 levels. The extraction map permits 200,000 document/section/segment/marker/part/preserved records and 64 MiB of editable text; each serialized JSON artifact, including each batch, is capped at 64 MiB. Limit violations fail explicitly without truncation.
 
+Validation bounds each supplied JSON file, including the control and expected batch, to 64 MiB, all translation responses together to 256 MiB and 10,000 files, and all parsed responses to 200,000 segments, 1,000,000 parts, and 64 MiB of decoded text. JSON parsing also charges one value for every scalar, object, or array and one entry for every array element or object key before constructing it, with per-file budgets of 3,000,000 values and 3,000,000 entries. A maximum legal response needs 2,600,004 values and 2,600,003 entries: one million part objects and their strings, 200,000 segment wrappers, and the envelope. The control's 200,000-record map and expected batches stay below the same bound. JSON nesting, paired-marker nesting, and NCX ancestor chains are capped at 64. The validator uses the extraction profile's existing 200,000-record map limit. These checks fail explicitly and never accept truncated input.
+
 ## Limitations
 
 - EPUB 3 is not supported.
 - XHTML extraction follows the explicit X vocabulary; unknown content is rejected. Computed CSS, layout, OCR, and linguistic meaning are not interpreted.
 - NCX `pageList` and `navList` are not included in the report.
-- The source mapping receives an independent coverage/integrity audit before publication. Validation of translated responses is not implemented. Textual attributes, head/OPF metadata, and NCX labels remain unchanged.
+- The source mapping receives an independent coverage/integrity audit before publication. Translated responses are checked for structural and protected-content conformance, not translation quality, meaning, or source hyperlink/CSS equivalence. Textual attributes, head/OPF metadata, and NCX labels are outside that check.
 - EPUB reconstruction and LLM integration are not implemented.

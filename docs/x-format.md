@@ -1,14 +1,14 @@
 # X Format
 
-Status: normative contract 1.0. Extraction of `control.json` and `source.json`, together with its independent coverage audit, is implemented alongside M0 inspection. Translated-response validation and EPUB reconstruction are not implemented.
+Status: normative contract 1.0. Extraction of `control.json` and `source.json`, its independent coverage audit, and structural validation of translated X 1.0 responses are implemented alongside M0 inspection. EPUB reconstruction is not implemented.
 
 ## Purpose and scope
 
 X separates translation content from the information needed to put it back into an EPUB. Minami identifies and maps content; an external translator supplies text. The translator never supplies authoritative XHTML, attributes, resource paths, or reconstruction instructions.
 
-The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction, M1.2 implements the independent coverage/integrity audit that runs before publication, and M2 translation validation and reconstruction remain planned.
+The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction, M1.2 implements the independent coverage/integrity audit that runs before publication, M2.0 implements structural validation of translated responses, and EPUB reconstruction remains planned.
 
-The words **must**, **must not**, and **reject** below define the contract for extraction, the coverage audit, and the future translation validator and builder. They do not imply that those future operations already exist.
+The words **must**, **must not**, and **reject** below define the contract for extraction, the coverage audit, the existing translation validator, and the future builder. They do not imply that EPUB reconstruction already exists.
 
 ## Files and authority
 
@@ -159,7 +159,7 @@ Atomic-order and ID-anchor checks are derived from the existing marker records a
 
 Every interval is `[start, end)`, using zero-based byte offsets into the **original uncompressed XHTML bytes**, including any initial BOM. End is exclusive. Bounds are nonnegative JSON integers no larger than `2^53 - 1`, within the document, and on lexical UTF-8 boundaries; each entity reference is indivisible. Numeric strings and fractional numbers are rejected. Sections partition the body interval; segment intervals lie entirely within their owning section. Marker spans lie inside their segment and match its original XML token tree. Nested markers may nest spans; unrelated spans cannot overlap.
 
-There are no copied XHTML strings, attribute dictionaries, parser node IDs, or XPath expressions in control. Original byte intervals locate opening/closing tags and atomic subtrees. The whole-EPUB digest plus regeneration guards those bytes, so additional per-text or per-slice hashes are not required. The public M0 model remains separate: these are additional X records for future implementation, not replacements for inspection types.
+There are no copied XHTML strings, attribute dictionaries, parser node IDs, or XPath expressions in control. Original byte intervals locate opening/closing tags and atomic subtrees. The whole-EPUB digest plus regeneration guards those bytes, so additional per-text or per-slice hashes are not required. The public M0 model remains separate: these are additional private X records, not replacements for inspection types.
 
 ### Complete mapping example
 
@@ -274,7 +274,7 @@ NCX targets use this same ID policy. A marker that establishes a promoted NCX bo
 9. Extraction coverage must account for every body text character exactly once as editable text, a protected atom, an explicitly preserved span, or unchanged ordinary whitespace. Markup, comments, and processing instructions are structural data, not linguistic text. No eligible text may disappear between nested containers or section boundaries. A document with no linguistic text legitimately has no segments. Attributes and head content are excluded by the declared profile, not silently missed by traversal.
 10. All parsing and reconstruction checks complete before reporting success or replacing an output EPUB. A structurally valid subset is not a complete translation. Future readers must bound JSON bytes, part counts, XHTML nodes, and nesting and reject limit violations without truncation; concrete implementation budgets do not grant permission to weaken these invariants or M0 limits.
 
-Errors must distinguish syntax, origin/version mismatch, control mismatch, coverage failure, unknown/duplicate/missing segment, marker multiplicity/topology/global atom order, ID-anchor placement, protected-space-in-text, and invalid character/part shape. Where known, diagnostics include original document path, section ID, segment ID, marker ID, and response part index. Whole-file syntax/origin failures may have no segment context. These are diagnostic categories for future work, not new Rust error variants implemented here.
+Errors must distinguish syntax, origin/version mismatch, control mismatch, coverage failure, unknown/duplicate/missing segment, marker multiplicity/topology/global atom order, ID-anchor placement, protected-space-in-text, and invalid character/part shape. Where known, diagnostics include original document path, section ID, segment ID, marker ID, and response part index. Whole-file syntax/origin failures may have no segment context. These diagnostic categories are implemented by the translation validator; no additional Rust error variants are required.
 
 ## XML, entities, whitespace, and Unicode
 
@@ -310,7 +310,7 @@ This is viable without a whole-document serializer because every replacement cov
 
 ## Contract cases
 
-These are proposed acceptance vectors for later RED tests, not executed parser/validator tests. JSON fragments below are case inputs, not additional file formats. Each case has an independent synthetic extraction unless it explicitly uses the complete mapping example. `source`/`target` in a vector are explanatory labels; response records still have only `id` and `parts`.
+These are acceptance vectors represented across the extraction and parser/validator tests. JSON fragments below are case inputs, not additional file formats. Each case has an independent synthetic extraction unless it explicitly uses the complete mapping example. `source`/`target` in a vector are explanatory labels; response records still have only `id` and `parts`.
 
 ### X01 — Simple paragraph
 

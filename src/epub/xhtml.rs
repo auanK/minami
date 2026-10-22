@@ -87,7 +87,7 @@ fn limit(path: &str, limit: &'static str) -> MinamiError {
     }
 }
 
-fn xml_char(c: char) -> bool {
+pub(crate) fn xml_char(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
 }
 

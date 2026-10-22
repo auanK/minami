@@ -733,6 +733,150 @@ fn preserved_obligations(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct ValidationFacts {
+    pub segments: BTreeMap<String, SegmentFacts>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SegmentFacts {
+    pub anchors: BTreeSet<String>,
+    pub promoted: Vec<PromotedMarker>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PromotedMarker {
+    pub id: String,
+    pub ancestors: BTreeSet<String>,
+}
+
+pub(crate) fn validation_facts(
+    doc: &Document,
+    path: &str,
+    segments: &[x::Segment],
+    navigation: &[NavigationEntry],
+) -> Result<ValidationFacts, MinamiError> {
+    let index = Index::new(doc);
+    let mut element_by_open = BTreeMap::new();
+    let mut id_elements = Vec::new();
+    for (node_index, node) in doc.nodes.iter().enumerate() {
+        let Some(element) = node.element() else {
+            continue;
+        };
+        element_by_open.insert(element.open.0, node_index);
+        if element.id.is_some() {
+            id_elements.push((node.span.0, node.span.1, node_index));
+        }
+    }
+    id_elements.sort_by_key(|(start, _, _)| *start);
+
+    let mut built = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let mut facts = SegmentFacts::default();
+        let mut parents = BTreeMap::new();
+        let mut node_marker = BTreeMap::new();
+        for marker in &segment.markers {
+            let parent = match &marker.token {
+                x::Token::Pair { parent, open, .. } => {
+                    let node = *element_by_open.get(&open.0).ok_or_else(|| {
+                        invalid(
+                            path,
+                            format!("marker {} does not match an original element", marker.id),
+                        )
+                    })?;
+                    if doc.nodes[node]
+                        .element()
+                        .is_some_and(|element| element.id.is_some())
+                    {
+                        facts.anchors.insert(marker.id.clone());
+                    }
+                    if node_marker.insert(node, marker.id.as_str()).is_some() {
+                        return Err(invalid(
+                            path,
+                            format!("marker {} duplicates an original element", marker.id),
+                        ));
+                    }
+                    parent
+                }
+                x::Token::Atom { parent, range } => {
+                    let first = id_elements.partition_point(|(start, _, _)| *start < range.0);
+                    for (start, end, node) in &id_elements[first..] {
+                        if *start >= range.1 {
+                            break;
+                        }
+                        if *end <= range.1 {
+                            facts.anchors.insert(marker.id.clone());
+                            if node_marker.insert(*node, marker.id.as_str()).is_some() {
+                                return Err(invalid(
+                                    path,
+                                    format!("marker {} duplicates an original element", marker.id),
+                                ));
+                            }
+                        }
+                    }
+                    parent
+                }
+            };
+            parents.insert(marker.id.as_str(), parent.as_deref());
+        }
+        built.push((facts, parents, node_marker));
+    }
+
+    for entry in navigation.iter().filter(|entry| entry.path == path) {
+        let Some(fragment) = entry.fragment.as_deref() else {
+            continue;
+        };
+        let target = *doc.ids.get(fragment).ok_or_else(|| {
+            invalid(
+                path,
+                format!("NCX fragment #{fragment} is absent from XHTML"),
+            )
+        })?;
+        if role(doc, &index, target, path)? != Role::Inline {
+            continue;
+        }
+        let start = doc.nodes[target].span.0;
+        let Some(position) = segments
+            .partition_point(|segment| segment.range.0 <= start)
+            .checked_sub(1)
+        else {
+            continue;
+        };
+        if start >= segments[position].range.1
+            || doc.nodes[target].span.1 > segments[position].range.1
+        {
+            continue;
+        }
+        let (facts, parents, node_marker) = &mut built[position];
+        let Some(marker) = node_marker.get(&target).copied() else {
+            return Err(invalid(
+                path,
+                format!("NCX target #{fragment} does not map to a marker"),
+            ));
+        };
+        let mut ancestors = BTreeSet::new();
+        let mut parent = *parents.get(marker).unwrap_or(&None);
+        while let Some(id) = parent {
+            if !ancestors.insert(id.to_owned()) {
+                break;
+            }
+            parent = *parents.get(id).unwrap_or(&None);
+        }
+        if !facts.promoted.iter().any(|promoted| promoted.id == marker) {
+            facts.promoted.push(PromotedMarker {
+                id: marker.to_owned(),
+                ancestors,
+            });
+        }
+    }
+
+    let mut result = ValidationFacts::default();
+    for (segment, (facts, _, _)) in segments.iter().zip(built) {
+        result.segments.insert(segment.id.clone(), facts);
+    }
+    Ok(result)
+}
+
 pub(crate) struct Records<'a> {
     pub document: &'a x::Document,
     pub sections: &'a [x::Section],

@@ -23,6 +23,7 @@ const MAX_RECORDS: usize = 200_000;
 pub(crate) struct Extraction {
     pub control: Control,
     pub source: Payload,
+    pub facts: audit::ValidationFacts,
 }
 
 /// Extract X 1.0 files into a new directory; existing destinations are never replaced.
@@ -404,6 +405,7 @@ fn from_snapshot_with(
             extraction_id,
             segments: Vec::new(),
         },
+        facts: audit::ValidationFacts::default(),
     };
     let by_id: BTreeMap<_, _> = package
         .resources
@@ -533,6 +535,13 @@ fn from_snapshot_with(
                 navigation: &result.control.navigation,
             },
         )?;
+        let facts = audit::validation_facts(
+            &doc,
+            &resource.path,
+            &result.control.segments[segment_start..],
+            &result.control.navigation,
+        )?;
+        result.facts.segments.extend(facts.segments);
     }
     audit::package(
         &package.resources,
@@ -563,7 +572,7 @@ impl Write for JsonBuffer {
     }
 }
 
-fn encode(value: &impl serde::Serialize) -> Result<Vec<u8>, MinamiError> {
+pub(crate) fn encode(value: &impl serde::Serialize) -> Result<Vec<u8>, MinamiError> {
     encode_budget(value, MAX_JSON_BYTES)
 }
 

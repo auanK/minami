@@ -2,6 +2,7 @@ mod audit;
 mod batching;
 pub mod extract;
 pub mod inspect;
+pub mod validate;
 
 #[cfg(test)]
 #[allow(dead_code)]

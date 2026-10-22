@@ -67,7 +67,7 @@ pub(crate) struct Payload {
     pub segments: Vec<SourceSegment>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct SourceSegment {
     pub id: String,
     pub parts: Vec<Part>,
