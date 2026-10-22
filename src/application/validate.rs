@@ -11,7 +11,7 @@ use crate::{
         audit::{PromotedMarker, SegmentFacts},
         extract,
     },
-    epub::xhtml,
+    epub::{archive::EpubArchive, xhtml},
     x::{self, Part, Token},
 };
 
@@ -37,15 +37,12 @@ pub struct ValidationSummary {
     pub complete: bool,
 }
 
-// Consumed by the reconstruction engine in M2.1 and the packager in M2.2.
-#[allow(dead_code)]
 pub(crate) struct ValidatedTranslation {
     extraction_id: String,
     complete: bool,
     segments: BTreeMap<String, Vec<Part>>,
 }
 
-#[allow(dead_code)]
 impl ValidatedTranslation {
     pub(crate) fn extraction_id(&self) -> &str {
         &self.extraction_id
@@ -60,13 +57,12 @@ impl ValidatedTranslation {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct PreparedTranslation {
     extraction: extract::Extraction,
     translation: ValidatedTranslation,
+    archive: EpubArchive,
 }
 
-#[allow(dead_code)]
 impl PreparedTranslation {
     pub(crate) fn extraction(&self) -> &extract::Extraction {
         &self.extraction
@@ -74,6 +70,10 @@ impl PreparedTranslation {
 
     pub(crate) fn translation(&self) -> &ValidatedTranslation {
         &self.translation
+    }
+
+    pub(crate) fn into_archive(self) -> EpubArchive {
+        self.archive
     }
 
     #[cfg(test)]
@@ -95,7 +95,6 @@ pub fn validate_epub(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn prepare_reconstruction(
     epub: &Path,
     control: &Path,
@@ -136,7 +135,7 @@ fn validate_epub_internal(
         });
     }
 
-    let data = extract::extract_data(epub)?;
+    let (data, archive) = extract::extract_with_archive(epub)?;
     let control_resource = control.display().to_string();
     let supplied = read_json(control, MAX_JSON_BYTES, "64 MiB control file")?;
     let regenerated_bytes = extract::encode(&data.control)?;
@@ -287,6 +286,7 @@ fn validate_epub_internal(
     Ok(PreparedTranslation {
         extraction: data,
         translation,
+        archive,
     })
 }
 

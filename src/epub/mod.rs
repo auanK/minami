@@ -1,6 +1,7 @@
 pub(crate) mod archive;
 pub(crate) mod navigation;
 pub(crate) mod package;
+pub(crate) mod packaging;
 pub(crate) mod segments;
 pub(crate) mod xhtml;
 

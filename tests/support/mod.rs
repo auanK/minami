@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{Cursor, Write},
+    io::{self, Cursor, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -180,4 +180,32 @@ pub fn declared_size(bytes: &mut [u8], name: &str, size: u32) {
         })
         .unwrap();
     bytes[i + 24..i + 28].copy_from_slice(&size.to_le_bytes());
+}
+
+#[allow(dead_code)]
+pub struct FailingWriter<W> {
+    pub inner: W,
+    pub remaining: usize,
+    pub fail_central: bool,
+}
+
+impl<W: Write> Write for FailingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.remaining == 0 || (self.fail_central && bytes.starts_with(b"PK\x01\x02")) {
+            return Err(io::Error::other("injected write failure"));
+        }
+        let n = bytes.len().min(self.remaining);
+        self.remaining -= n;
+        self.inner.write(&bytes[..n])
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W: Seek> Seek for FailingWriter<W> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
 }

@@ -5,13 +5,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use minami::{extract_epub, extract_epub_batched, inspect_epub, validate_epub};
+use minami::{build_epub, extract_epub, extract_epub_batched, inspect_epub, validate_epub};
 
 #[derive(Parser)]
 #[command(
     name = "minami",
     version,
-    about = "Inspect EPUB 2 structure, extract translation input, and validate translated responses"
+    about = "Inspect, extract, validate, and build EPUB 2 books with external translations"
 )]
 struct Args {
     #[command(subcommand)]
@@ -20,6 +20,17 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build a new EPUB from a complete, structurally valid translation.
+    Build {
+        file: PathBuf,
+        #[arg(long, value_name = "FILE")]
+        control: PathBuf,
+        /// Translation response; repeat to supply the complete set.
+        #[arg(long = "translation", value_name = "FILE", required = true)]
+        translations: Vec<PathBuf>,
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+    },
     /// Inspect the package, reading order and NCX navigation as JSON.
     Inspect { file: PathBuf },
     /// Extract translation input and reconstruction metadata to a new directory.
@@ -49,6 +60,20 @@ enum Command {
 pub fn run() -> ExitCode {
     let args = Args::parse();
     let result = match args.command {
+        Command::Build {
+            file,
+            control,
+            translations,
+            output,
+        } => {
+            return match build_epub(&file, &control, &translations, &output) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("minami: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::Inspect { file } => inspect_epub(&file),
         Command::Extract {
             file,

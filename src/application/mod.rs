@@ -1,9 +1,9 @@
 mod audit;
 mod batching;
+pub mod build;
 pub mod extract;
 pub mod inspect;
-// The reconstruction engine is consumed by the EPUB packager in M2.2.
-#[allow(dead_code)]
+mod publish;
 mod reconstruct;
 pub mod validate;
 

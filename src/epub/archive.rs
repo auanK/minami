@@ -10,10 +10,10 @@ use zip::{CompressionMethod, ZipArchive};
 use super::{ambiguous, invalid, missing, unsupported};
 use crate::MinamiError;
 
-const MAX_ENTRIES: usize = 4096;
+pub(crate) const MAX_ENTRIES: usize = 4096;
 pub(crate) const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_XML_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 1024;
 
@@ -23,7 +23,7 @@ pub(crate) struct EpubArchive {
     verified: BTreeSet<String>,
 }
 
-fn zip_error(
+pub(crate) fn zip_error(
     resource: &str,
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> MinamiError {
@@ -112,6 +112,8 @@ pub(crate) fn from_file(mut file: File, resource: &str) -> Result<EpubArchive, M
         source,
     })?;
     let (entry_count, directory_start) = preflight(&mut file, &resource, metadata.len())?;
+    // Clones can share a cursor: both readers explicitly seek, and never read concurrently.
+    let mut headers = file.try_clone().map_err(|e| zip_error(&resource, e))?;
     let mut zip = ZipArchive::new(file).map_err(|e| zip_error(&resource, e))?;
     if zip.len() != entry_count
         || zip.central_directory_start() != directory_start
@@ -155,6 +157,15 @@ pub(crate) fn from_file(mut file: File, resource: &str) -> Result<EpubArchive, M
         if entry.encrypted() || entry.is_symlink() {
             return Err(unsupported(&name, "encrypted ZIP entry or symbolic link"));
         }
+        if entry.extra_data_fields().any(|field| {
+            matches!(
+                field,
+                zip::extra_fields::ExtraField::Zip64ExtendedInformation(_)
+            )
+        }) {
+            return Err(unsupported(&name, "ZIP64"));
+        }
+        reject_local_zip64(&mut headers, entry.header_start(), &name)?;
         if !matches!(
             entry.compression(),
             CompressionMethod::Stored | CompressionMethod::Deflated
@@ -219,6 +230,40 @@ pub(crate) fn from_file(mut file: File, resource: &str) -> Result<EpubArchive, M
     Ok(archive)
 }
 
+fn reject_local_zip64(file: &mut File, header_start: u64, path: &str) -> Result<(), MinamiError> {
+    let offset = header_start
+        .checked_add(26)
+        .ok_or_else(|| invalid(path, "local ZIP header overflow"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| zip_error(path, e))?;
+    let mut lengths = [0; 4];
+    file.read_exact(&mut lengths)
+        .map_err(|e| zip_error(path, e))?;
+    let name_len = u16::from_le_bytes([lengths[0], lengths[1]]);
+    let mut remaining = u16::from_le_bytes([lengths[2], lengths[3]]);
+    file.seek(SeekFrom::Current(i64::from(name_len)))
+        .map_err(|e| zip_error(path, e))?;
+    while remaining != 0 {
+        if remaining < 4 {
+            return Err(invalid(path, "truncated local ZIP extra field"));
+        }
+        let mut field = [0; 4];
+        file.read_exact(&mut field)
+            .map_err(|e| zip_error(path, e))?;
+        if u16::from_le_bytes([field[0], field[1]]) == 1 {
+            return Err(unsupported(path, "ZIP64"));
+        }
+        let size = u16::from_le_bytes([field[2], field[3]]);
+        remaining = remaining
+            .checked_sub(4)
+            .and_then(|left| left.checked_sub(size))
+            .ok_or_else(|| invalid(path, "truncated local ZIP extra field"))?;
+        file.seek(SeekFrom::Current(i64::from(size)))
+            .map_err(|e| zip_error(path, e))?;
+    }
+    Ok(())
+}
+
 fn validate_entry_name(name: &str) -> Result<(), MinamiError> {
     if name.len() > MAX_PATH_BYTES {
         return Err(limit(name, "1024 bytes per internal path"));
@@ -234,6 +279,10 @@ fn validate_entry_name(name: &str) -> Result<(), MinamiError> {
 }
 
 impl EpubArchive {
+    pub(crate) fn into_zip(self) -> ZipArchive<File> {
+        self.zip
+    }
+
     pub(crate) fn contains(&self, path: &str) -> bool {
         self.files.contains_key(path)
     }

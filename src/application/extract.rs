@@ -2,12 +2,15 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use sha2::{Digest, Sha256};
 
-use super::{audit, batching};
+use super::{
+    audit, batching,
+    publish::{io_error, output_destination, rename_new},
+};
 use crate::{
     MinamiError, NavigationEntry,
     epub::{
@@ -100,42 +103,6 @@ fn stage_directory(destination: &Path) -> Result<tempfile::TempDir, MinamiError>
         })
 }
 
-fn output_destination(output: &Path) -> Result<PathBuf, MinamiError> {
-    let resource = output.display().to_string();
-    let name = output
-        .file_name()
-        .ok_or_else(|| crate::epub::invalid(&resource, "output must name a new directory"))?;
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let parent =
-        fs::canonicalize(parent).map_err(|e| io_error("opening output parent", &resource, e))?;
-    if !parent.is_dir() {
-        return Err(io_error(
-            "opening output parent",
-            &resource,
-            io::Error::new(
-                io::ErrorKind::NotADirectory,
-                "output parent is not a directory",
-            ),
-        ));
-    }
-    let destination = parent.join(name);
-    match fs::symlink_metadata(&destination) {
-        Ok(_) => {
-            return Err(io_error(
-                "creating extraction output",
-                &resource,
-                io::Error::new(io::ErrorKind::AlreadyExists, "output already exists"),
-            ));
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io_error("checking extraction output", &resource, e)),
-    }
-    Ok(destination)
-}
-
 fn write_staged(
     stage: tempfile::TempDir,
     control: &[u8],
@@ -191,50 +158,15 @@ fn publish_ready(stage: tempfile::TempDir, destination: &Path) -> Result<(), Min
     Ok(())
 }
 
-#[cfg(windows)]
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    if from[..from.len() - 1].contains(&0) || to[..to.len() - 1].contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "NUL in publication path",
-        ));
-    }
-    // SAFETY: both pointers reference live NUL-terminated UTF-16 buffers. Zero flags forbid replacement and cross-volume copying.
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        from,
-        rustix::fs::CWD,
-        to,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(Into::into)
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
-fn rename_new(_from: &Path, _to: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "atomic no-replace publication is supported on Windows and Linux/Android",
-    ))
-}
-
 pub(crate) fn extract_data(path: &Path) -> Result<Extraction, MinamiError> {
+    extract_with_archive(path).map(|(data, _)| data)
+}
+
+pub(crate) fn extract_with_archive(
+    path: &Path,
+) -> Result<(Extraction, archive::EpubArchive), MinamiError> {
     let (file, digest) = snapshot(path)?;
-    from_snapshot(file, digest, &path.display().to_string())
+    from_snapshot_with(file, digest, &path.display().to_string(), |_, _| {})
 }
 
 #[cfg(test)]
@@ -243,7 +175,7 @@ fn extract_data_with(
     tamper: impl FnMut(&mut Extraction, usize),
 ) -> Result<Extraction, MinamiError> {
     let (file, digest) = snapshot(path)?;
-    from_snapshot_with(file, digest, &path.display().to_string(), tamper)
+    from_snapshot_with(file, digest, &path.display().to_string(), tamper).map(|(data, _)| data)
 }
 
 #[cfg(test)]
@@ -255,14 +187,6 @@ fn extract_epub_with(
     let destination = output_destination(output)?;
     let data = extract_data_with(path, tamper)?;
     publish(&destination, &data)
-}
-
-fn io_error(operation: &'static str, resource: &str, source: io::Error) -> MinamiError {
-    MinamiError::Io {
-        operation,
-        resource: resource.into(),
-        source,
-    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -364,8 +288,9 @@ fn sections(
         .collect())
 }
 
+#[cfg(test)]
 fn from_snapshot(file: File, digest: String, resource: &str) -> Result<Extraction, MinamiError> {
-    from_snapshot_with(file, digest, resource, |_, _| {})
+    from_snapshot_with(file, digest, resource, |_, _| {}).map(|(data, _)| data)
 }
 
 fn from_snapshot_with(
@@ -373,7 +298,7 @@ fn from_snapshot_with(
     digest: String,
     resource: &str,
     mut tamper: impl FnMut(&mut Extraction, usize),
-) -> Result<Extraction, MinamiError> {
+) -> Result<(Extraction, archive::EpubArchive), MinamiError> {
     let extraction_id = hex(&Sha256::digest(format!(
         "minami-x\n{}\n{}\n{digest}\n",
         x::VERSION,
@@ -552,7 +477,7 @@ fn from_snapshot_with(
         &result.control,
         resource,
     )?;
-    Ok(result)
+    Ok((result, archive))
 }
 
 struct JsonBuffer {
