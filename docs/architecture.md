@@ -60,6 +60,8 @@ The application builds the full report before the CLI serializes it. A failed in
 
 Manifest and spine order are preserved from the OPF. Navigation order follows document order in `navMap`, independent of `playOrder`. A document may have multiple navigation entries; a missing fragment remains absent.
 
+The proposed [X format contract](x-format.md) specifies future extraction, external translation data, and reconstruction mappings. It is not implemented by the current inspection operation.
+
 ## Supported EPUB Profile
 
 The current profile supports EPUB 2.0 packages with an OPF, an NCX 2005-1 navigation document, and XHTML reading resources. The reading order comes from the OPF spine; the primary navigation comes from NCX `navMap`. Multiple logical sections may point to the same XHTML document. Fragment references are preserved but are not checked against IDs inside XHTML.
