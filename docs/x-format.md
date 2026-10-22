@@ -1,14 +1,14 @@
 # X Format
 
-Status: normative contract 1.0. Extraction of `control.json` and `source.json`, its independent coverage audit, and structural validation of translated X 1.0 responses are implemented alongside M0 inspection. EPUB reconstruction is not implemented.
+Status: normative contract 1.0. Extraction of `control.json` and `source.json`, its independent coverage audit, structural validation of translated X 1.0 responses, and internal in-memory XHTML reconstruction are implemented alongside M0 inspection. EPUB packaging, a reconstruction command, and `minami build` are not implemented.
 
 ## Purpose and scope
 
 X separates translation content from the information needed to put it back into an EPUB. Minami identifies and maps content; an external translator supplies text. The translator never supplies authoritative XHTML, attributes, resource paths, or reconstruction instructions.
 
-The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction, M1.2 implements the independent coverage/integrity audit that runs before publication, M2.0 implements structural validation of translated responses, and EPUB reconstruction remains planned.
+The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction, M1.2 implements the independent coverage/integrity audit that runs before publication, M2.0 implements structural validation of translated responses, and M2.1 implements internal in-memory XHTML reconstruction. EPUB packaging remains planned.
 
-The words **must**, **must not**, and **reject** below define the contract for extraction, the coverage audit, the existing translation validator, and the future builder. They do not imply that EPUB reconstruction already exists.
+The words **must**, **must not**, and **reject** below define the contract for extraction, the coverage audit, the existing translation validator, and internal reconstruction. They do not imply that EPUB packaging exists.
 
 ## Files and authority
 

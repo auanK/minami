@@ -37,12 +37,86 @@ pub struct ValidationSummary {
     pub complete: bool,
 }
 
+// Consumed by the reconstruction engine in M2.1 and the packager in M2.2.
+#[allow(dead_code)]
+pub(crate) struct ValidatedTranslation {
+    extraction_id: String,
+    complete: bool,
+    segments: BTreeMap<String, Vec<Part>>,
+}
+
+#[allow(dead_code)]
+impl ValidatedTranslation {
+    pub(crate) fn extraction_id(&self) -> &str {
+        &self.extraction_id
+    }
+
+    pub(crate) fn complete(&self) -> bool {
+        self.complete
+    }
+
+    pub(crate) fn segments(&self) -> &BTreeMap<String, Vec<Part>> {
+        &self.segments
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct PreparedTranslation {
+    extraction: extract::Extraction,
+    translation: ValidatedTranslation,
+}
+
+#[allow(dead_code)]
+impl PreparedTranslation {
+    pub(crate) fn extraction(&self) -> &extract::Extraction {
+        &self.extraction
+    }
+
+    pub(crate) fn translation(&self) -> &ValidatedTranslation {
+        &self.translation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn extraction_mut(&mut self) -> &mut extract::Extraction {
+        &mut self.extraction
+    }
+}
+
 pub fn validate_epub(
     epub: &Path,
     control: &Path,
     translations: &[PathBuf],
     expected_batch: Option<&Path>,
 ) -> Result<ValidationSummary, MinamiError> {
+    let prepared = validate_epub_internal(epub, control, translations, expected_batch)?;
+    Ok(ValidationSummary {
+        validated_segments: prepared.translation.segments.len(),
+        complete: prepared.translation.complete,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn prepare_reconstruction(
+    epub: &Path,
+    control: &Path,
+    translations: &[PathBuf],
+) -> Result<PreparedTranslation, MinamiError> {
+    let prepared = validate_epub_internal(epub, control, translations, None)?;
+    if !prepared.translation.complete {
+        return Err(invalid(
+            "translation responses",
+            "reconstruction requires a complete validated translation",
+        ));
+    }
+    Ok(prepared)
+}
+
+fn validate_epub_internal(
+    epub: &Path,
+    control: &Path,
+    translations: &[PathBuf],
+    expected_batch: Option<&Path>,
+) -> Result<PreparedTranslation, MinamiError> {
     if expected_batch.is_some() && translations.len() != 1 {
         return Err(invalid(
             "expected batch",
@@ -205,9 +279,14 @@ pub fn validate_epub(
         validate_segment(expected, target, resource)?;
     }
 
-    Ok(ValidationSummary {
-        validated_segments: expected_ids.len(),
+    let translation = ValidatedTranslation {
+        extraction_id: data.control.extraction_id.clone(),
         complete: expected_batch.is_none(),
+        segments: parts_by_id,
+    };
+    Ok(PreparedTranslation {
+        extraction: data,
+        translation,
     })
 }
 

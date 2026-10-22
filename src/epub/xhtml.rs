@@ -6,7 +6,7 @@ use xmlparser::{ElementEnd, ExternalId, Token, Tokenizer};
 use crate::MinamiError;
 
 pub(crate) const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
-const MAX_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_NODES: usize = 100_000;
 const MAX_DEPTH: usize = 128;
 

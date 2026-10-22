@@ -24,6 +24,7 @@ pub(crate) struct Extraction {
     pub control: Control,
     pub source: Payload,
     pub facts: audit::ValidationFacts,
+    pub xhtml: BTreeMap<String, String>,
 }
 
 /// Extract X 1.0 files into a new directory; existing destinations are never replaced.
@@ -406,6 +407,7 @@ fn from_snapshot_with(
             segments: Vec::new(),
         },
         facts: audit::ValidationFacts::default(),
+        xhtml: BTreeMap::new(),
     };
     let by_id: BTreeMap<_, _> = package
         .resources
@@ -436,6 +438,7 @@ fn from_snapshot_with(
         let doc = xhtml::parse(&source, &resource.path)?;
         let plan = segments::extract(&doc, &resource.path)?;
         let document_id = format!("d{}", result.control.documents.len() + 1);
+        result.xhtml.insert(document_id.clone(), source);
         let mapped_sections = sections(
             &doc,
             &plan,
