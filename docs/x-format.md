@@ -6,7 +6,7 @@ Status: normative contract 1.0. M0 inspection, extraction of `control.json` and 
 
 X separates translation content from the information needed to put it back into an EPUB. Minami identifies and maps content; an external translator supplies text. The translator never supplies authoritative XHTML, attributes, resource paths, or reconstruction instructions.
 
-The initial serialization is JSON. The extraction profile is `epub2-xhtml-v1`, using the existing EPUB 2 ZIP, package, spine, and NCX readers. It adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. M1.1 implements extraction, M1.2 implements the independent coverage/integrity audit that runs before publication, M2.0 implements structural validation of translated responses, M2.1 implements in-memory XHTML reconstruction, and M2.2 integrates complete validation, reconstruction, resource packaging, independent output verification, and safe publication. ZIP metadata policy and implementation budgets are documented in [architecture](architecture.md) and [development](development.md).
+The serialization is JSON. Extraction uses the existing EPUB 2 ZIP, package, spine, and NCX readers; it adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. Paired inline `<del>` and `<s>` elements are supported alongside the other documented XHTML elements. ZIP metadata policy and implementation budgets are documented in [architecture](architecture.md) and [development](development.md).
 
 The words **must**, **must not**, and **reject** below define the unchanged contract for extraction, coverage auditing, structural translation validation, reconstruction, and the builder. References below to future implementation preserve the original specification's historical wording.
 
@@ -30,21 +30,21 @@ Every X file must be one strict JSON object encoded in UTF-8 without a BOM. Dupl
 | `source.json` | Segment IDs and source parts | Derived convenience input, never a reconstruction authority |
 | `translated.json` | Segment IDs and target parts | Untrusted text plus claims about protected token placement |
 
-Keeping `control.json` out of the translator's write area is useful but is not the integrity mechanism. A future builder must regenerate it with the supported, operator-selected profile, compare all its fields, and reject any mismatch. It must use the regenerated map. A checksum stored beside editable metadata cannot authenticate that metadata. No signatures, secrets, or trusted storage service are required by this contract.
+Keeping `control.json` out of the translator's write area is useful but is not the integrity mechanism. Validation and build regenerate the map from the selected original, compare all fields, and use only the regenerated map. A checksum stored beside editable metadata cannot authenticate that metadata. No signatures, secrets, or trusted storage service are required by this contract.
 
 ## Version, identity, and determinism
 
-All artifacts have `format_version: "1.0"`. Control additionally has `profile: "epub2-xhtml-v1"`. Unsupported versions/profiles are rejected without a fallback. A change to segmentation, boundary rules, token classification, ordering, or identity requires a new profile. A schema change requires a new format version. Implementations claiming the same profile must produce the same logical extraction; the executable's release number is not an identity input.
+All artifacts have `format_version: "1.0"`, which identifies the current intermediate format. Extraction, validation, and build use one XHTML vocabulary. Unknown elements are rejected. `control.json` has no XHTML selector; validation and build regenerate extraction from the original EPUB and require an exact control match. A format schema change requires a format version change.
 
 `source.epub_sha256` is the lowercase, 64-hex-character SHA-256 digest of the **complete original ZIP bytes**, not a filename, OPF identifier, or concatenation of resources. Repacking the source ZIP changes its identity even if its XHTML is unchanged.
 
 `extraction_id` is the lowercase SHA-256 digest of this exact UTF-8 sequence, including the final LF and with no BOM:
 
 ```text
-minami-x\n1.0\nepub2-xhtml-v1\n<source.epub_sha256>\n
+minami-x\n1.0\n<source.epub_sha256>\n
 ```
 
-Here `\n` denotes one byte `0A`; the angle-bracketed expression is replaced by the 64-character digest, without brackets. This framing contains no timestamps, locale, absolute paths, or random values.
+Here `\n` denotes one byte `0A`; `<source.epub_sha256>` is replaced by the 64-character digest, without brackets. This framing contains no timestamps, locale, absolute paths, or random values.
 
 | Identity | Scope and generation |
 | --- | --- |
@@ -55,7 +55,7 @@ Here `\n` denotes one byte `0A`; the angle-bracketed expression is replaced by t
 
 Counters start at 1, use decimal digits without leading zeroes, and are not reset by sections or batches. Marker counters alone reset for each segment. Their role is the original supported element's local name, or `nbsp`, `space`, `comment`, or `pi` for the special atoms below. A marker's role is a readable hint, not authority to create a tag.
 
-A permanent segment identity is `(extraction_id, segment_id)`. It does not depend on translated text, section titles, batch size, or processing order. Stability is promised for the same source bytes and profile, not across edited editions, repackaged EPUBs, or profile migrations.
+A permanent segment identity is `(extraction_id, segment_id)`. It does not depend on translated text, section titles, batch size, or processing order. Stability is promised for the same source bytes, not across edited editions or repackaged EPUBs.
 
 Minami emits arrays in their defined source order and object fields in the order listed in this specification, using UTF-8, two-space indentation, LF, and one final newline. Ordinary Unicode is emitted directly; JSON-required escaping is applied. Input object key order is irrelevant. Translation record order is also irrelevant to association; part order is meaningful.
 
@@ -65,7 +65,7 @@ Minami emits arrays in their defined source order and object fields in the order
 
 Each manifest XHTML resource is represented exactly once. Unique spine documents come first, in spine order, including `linear="no"`; remaining manifest XHTML documents follow manifest order. Repeated spine references retain their original positions but do not duplicate a document or its segments. Order for a non-spine document is an extraction order, not an invented reading order. This includes NCX-only destinations and manifest footnote documents without crawling links.
 
-Other ZIP resources remain untouched. Unmanifested XHTML is outside this profile's extraction coverage; successful coverage means all declared manifest XHTML, not every potentially readable object in the ZIP. Missing or unsupported required resources still fail through the existing EPUB infrastructure.
+Other ZIP resources remain untouched. Unmanifested XHTML is outside extraction coverage; successful coverage means all declared manifest XHTML, not every potentially readable object in the ZIP. Missing or unsupported required resources still fail through the existing EPUB infrastructure.
 
 `control.spine` reuses the M0 `idref`/`linear` representation. `control.navigation` reuses M0 navigation fields, order, and zero-based depth/position. Paths resolve through the existing normalized EPUB path rules. Navigation titles remain source metadata; they are not identifiers or translation fields.
 
@@ -77,7 +77,7 @@ For each document:
 
 1. Establish the raw byte interval inside its single XHTML `body`.
 2. Map an NCX destination without a fragment to the beginning of that interval. It is not an invented fragment and does not automatically mean the whole document if later destinations exist.
-3. Resolve a nonempty fragment against exactly one unqualified `id` on an XHTML element. Such IDs must be nonempty and unique throughout each XHTML document. A missing target, an empty fragment, a target outside the body, or reliance on `name`/`xml:id` fallback is rejected by this profile. This is stronger than M0 inspection, which does not resolve fragments.
+3. Resolve a nonempty fragment against exactly one unqualified `id` on an XHTML element. Such IDs must be nonempty and unique throughout each XHTML document. A missing target, an empty fragment, a target outside the body, or reliance on `name`/`xml:id` fallback is rejected. This is stronger than M0 inspection, which does not resolve fragments.
 4. A target block/container starts a section immediately before its opening tag (a target on `body` uses the body interior start). An inline target can move the boundary to the beginning of its enclosing flow group only if everything before it in that group is ordinary XML whitespace or opening tokens of its ancestors. A target after linguistic text or a protected atom would split a segment and is rejected; no phrase is silently split to accommodate it. An opaque descendant, such as an ID inside SVG or a callout atom, cannot establish a section boundary.
 5. Sort distinct normalized boundaries by physical source position, add body start/end, and form consecutive half-open intervals. Equal boundaries are aliases of one section; retain every matching navigation position. Navigation order and hierarchy are never rewritten to match this sort.
 6. A prefix before the first NCX target, or a whole document without NCX targets, has a section with `navigation_positions: []`. No chapter association is guessed across documents. Sections with no translatable content remain represented. An empty body has one empty section.
@@ -86,19 +86,21 @@ Thus navigation entries may share a section, and different sections may share on
 
 ## Linguistic segments
 
-The profile works on XHTML body content in source order, not one segment per XML text node or one chapter per file. A paragraph or heading with inline content is one segment, including text before, inside, and after inline elements. A dialogue paragraph is treated as a paragraph; dialogue detection is not added.
+Extraction works on XHTML body content in source order, not one segment per XML text node or one chapter per file. A paragraph or heading with inline content is one segment, including text before, inside, and after inline elements. A dialogue paragraph is treated as a paragraph; dialogue detection is not added.
 
-The initial vocabulary is explicit:
+The supported vocabulary is explicit:
 
 | Role | Elements and handling |
 | --- | --- |
 | Flow containers | `body`, `div`, `center`, `blockquote`, `p`, `h1`–`h6`, `li`, `dt`, `dd`, `td`, `th`, `caption` |
 | Structural containers | `ol`, `ul`, `dl`, `table`, `thead`, `tbody`, `tfoot`, `tr`, `colgroup`; recurse without joining different children |
-| Paired inline elements | `i`, `b`, `em`, `strong`, `span`, `a`, `sup`, `sub`, `big`, `small`, `font`, except the opaque cases below |
+| Paired inline elements | `i`, `b`, `em`, `strong`, `span`, `a`, `sup`, `sub`, `big`, `small`, `font`, `del`, `s`, except the opaque cases below |
 | Atomic content | `br`, `img`, a complete SVG subtree, comments, processing instructions, empty inline subtrees, protected spaces, and a complete `sup`/`sub` containing a link |
 | Preserved boundaries | `hr`, `col`, opaque `script`/`style` subtrees; none supplies editable text |
 
 Within each flow container, a maximal consecutive group of direct text and inline/atomic children is one unit. A block or structural child ends the group and is traversed independently. This covers text directly in a `center`, a list item, a table cell, or either side of a nested table without extracting parent and child text twice. Paired inline elements may contain only supported inline/atomic content, not blocks.
+
+`<del>` and `<s>` use paired markers like the other supported inline elements. Their text is editable, while their original opening and closing tag bytes, attributes, and nesting are retained during reconstruction. Their visual styling can vary between EPUB readers.
 
 Structural child relationships are `ol`/`ul` → `li`; `dl` → `dt`/`dd`; `table` → `caption`/`col`/`colgroup`/`thead`/`tbody`/`tfoot`/`tr`; `thead`/`tbody`/`tfoot` → `tr`; `tr` → `td`/`th`; and `colgroup` → `col`. Whitespace, comments, and processing instructions between those children are preserved. Unexpected direct linguistic text or other children are rejected rather than discarded. Unknown elements/namespaces with unclassified content are unsupported, not guessed to be inline or silently skipped.
 
@@ -106,7 +108,7 @@ A group becomes a segment if it contains decoded text other than XML whitespace 
 
 Tables retain their original cell/row/nesting structure. Text in `th`, `td`, captions, and nested paragraphs is eligible; no segment crosses cells. Images and SVG are immutable objects, not OCR input. Footnote prose in paragraphs/list items is eligible; a linked superscript/subscript callout is one opaque atom, including its label, `id`, destination, and nested tags. Other `sup`/`sub` text can use paired markers. An ordinary link's visible prose is translated while all its attributes remain original. Links are not fetched; their original destinations, including external ones, are copied verbatim.
 
-All attributes are outside translation, including `href`, `id`, `src`, `class`, `style`, `title`, `alt`, and language attributes. Head content, including document titles, is outside this profile. Text in SVG, scripts, and styles is intentionally not translated. These exclusions are coverage boundaries, not evidence that every visible string in a rendered book has been translated.
+All attributes are outside translation, including `href`, `id`, `src`, `class`, `style`, `title`, `alt`, and language attributes. Head content, including document titles, is outside extraction. Text in SVG, scripts, and styles is intentionally not translated. These exclusions are coverage boundaries, not evidence that every visible string in a rendered book has been translated.
 
 ## Inline representation: decision
 
@@ -142,11 +144,11 @@ For example, `[[OPEN_1]]` inside a text part is ordinary literal text. A target 
 
 All listed fields are required. Arrays may be empty where the source has no corresponding content. No additional fields are accepted in version 1.0.
 
-Atomic-order and ID-anchor checks are derived from the existing marker records and original XHTML spans. No anchor flag, ordering field, or other schema addition is required; X 1.0 and `epub2-xhtml-v1` retain their existing representations.
+Atomic-order and ID-anchor checks are derived from the existing marker records and original XHTML spans. No anchor flag, ordering field, or other schema addition is required; X 1.0 uses the same representation throughout.
 
 | Record | Fields |
 | --- | --- |
-| Control root | `format_version`, `profile`, `extraction_id`, `source`, `spine`, `documents`, `navigation`, `sections`, `segments`, `preserved` |
+| Control root | `format_version`, `extraction_id`, `source`, `spine`, `documents`, `navigation`, `sections`, `segments`, `preserved` |
 | `source` | `epub_sha256`, `epub_version`, `package_path`, `ncx_path`; strings obtained from the original |
 | Document | `id`, `manifest_id`, `path`, `body`; `body` is a byte interval |
 | Section | `id`, `document_id`, `range`, `navigation_positions` |
@@ -155,7 +157,7 @@ Atomic-order and ID-anchor checks are derived from the existing marker records a
 | Atomic marker | `id`, `kind: "atom"`, `parent`, `range` |
 | Preserved record | `document_id`, `range`, `reason`; reason is `atom`, `svg`, `script`, or `style` |
 
-`spine` and `navigation` use the M0 field shapes described above. `parent` is the nearest enclosing paired marker ID in the same segment, or `null`. A complete atomic subtree has no nested marker records. Markers are listed by source start position; only emitted markers consume their segment's counter. `preserved` records identify atomic source spans and script/style subtrees outside segment ranges, including atoms in groups without editable text. SVG roots use reason `svg`, other atoms use `atom`. An atomic subtree is recorded once, without nested preserved records; anything already represented by a segment marker is not recorded again. Preserved records follow document/source order. Structural tags and ordinary whitespace-only text are implicitly preserved by the profile.
+`spine` and `navigation` use the M0 field shapes described above. `parent` is the nearest enclosing paired marker ID in the same segment, or `null`. A complete atomic subtree has no nested marker records. Markers are listed by source start position; only emitted markers consume their segment's counter. `preserved` records identify atomic source spans and script/style subtrees outside segment ranges, including atoms in groups without editable text. SVG roots use reason `svg`, other atoms use `atom`. An atomic subtree is recorded once, without nested preserved records; anything already represented by a segment marker is not recorded again. Preserved records follow document/source order. Structural tags and ordinary whitespace-only text are implicitly preserved by the extraction rules.
 
 Every interval is `[start, end)`, using zero-based byte offsets into the **original uncompressed XHTML bytes**, including any initial BOM. End is exclusive. Bounds are nonnegative JSON integers no larger than `2^53 - 1`, within the document, and on lexical UTF-8 boundaries; each entity reference is indivisible. Numeric strings and fractional numbers are rejected. Sections partition the body interval; segment intervals lie entirely within their owning section. Marker spans lie inside their segment and match its original XML token tree. Nested markers may nest spans; unrelated spans cannot overlap.
 
@@ -169,13 +171,12 @@ This synthetic XHTML is one line, UTF-8 without BOM or final newline. Offsets be
 <html xmlns="http://www.w3.org/1999/xhtml"><head><title>Sample</title></head><body><p id="start">I said <i>this</i>.</p><h2 id="next">Next</h2><p>Done.</p></body></html>
 ```
 
-The following is a model instance, not output from an implemented extractor. Its all-zero source digest is **hypothetical**, not a digest claimed for a real EPUB; its `extraction_id` is correctly derived from that hypothetical value. Future tests must generate an actual EPUB and replace both digests.
+The following is a model instance, not output from an extractor run. Its all-zero source digest is **hypothetical**, not a digest claimed for a real EPUB; its `extraction_id` is correctly derived from that hypothetical value.
 
 ```json
 {
   "format_version": "1.0",
-  "profile": "epub2-xhtml-v1",
-  "extraction_id": "53a52d4b44bbde450420c79cc6442d9fb5249c5343ea21265e1f4b7d63535fe5",
+  "extraction_id": "0851b2b31502a10eaf225e31e08bd65417435ea64a613261d094039c759419d1",
   "source": {
     "epub_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "epub_version": "2.0",
@@ -247,9 +248,9 @@ Additional context belongs in a separate read-only message or caller-managed con
 
 ### Identity and authority
 
-1. The operator-selected original must match the control origin digest. The selected contract/profile must be supported; regenerated control must equal supplied control by field values and ordered arrays, independent of JSON object key order.
+1. The operator-selected original must match the control origin digest. Regenerated control must equal supplied control by field values and ordered arrays, independent of JSON object key order.
 2. The response version and `extraction_id` must equal the regenerated extraction. Re-labeling a response cannot prove linguistic provenance: SHA-256 binds the expected source bytes, not the honesty or quality of translated text.
-3. Document, section, and segment IDs must be unique in their scopes, and every relationship must resolve. Source arrays and intervals must match regeneration exactly. Every requested segment appears exactly once; final success requires the entire extraction, including non-spine content selected by this profile.
+3. Document, section, and segment IDs must be unique in their scopes, and every relationship must resolve. Source arrays and intervals must match regeneration exactly. Every requested segment appears exactly once; final success requires the entire extraction, including non-spine content selected by the current rules.
 
 ### Protected structure
 
@@ -271,34 +272,34 @@ NCX targets use this same ID policy. A marker that establishes a promoted NCX bo
 ### Text, coverage, and completion
 
 8. JSON strings must decode to Unicode scalar values valid for XML 1.0; reject unpaired surrogates and prohibited XML characters even if a JSON parser accepts them. Additionally, every source and target `text` part must exclude decoded U+00A0, U+2007, and U+202F, including occurrences written as JSON Unicode escapes. Reject rather than normalize, convert, or fabricate atoms. Do not normalize Unicode, case-fold, trim, or collapse text. Neither a text-bearing source segment nor any paired marker's target subtree may become empty or whitespace-only after atoms are excluded. For this check, whitespace is exactly XML whitespace (U+0009/U+000A/U+000D/U+0020); protected-space scalars occur only as atoms, not in `text`. Identical source/target text is structurally valid; the validator cannot prove translation occurred.
-9. Extraction coverage must account for every body text character exactly once as editable text, a protected atom, an explicitly preserved span, or unchanged ordinary whitespace. Markup, comments, and processing instructions are structural data, not linguistic text. No eligible text may disappear between nested containers or section boundaries. A document with no linguistic text legitimately has no segments. Attributes and head content are excluded by the declared profile, not silently missed by traversal.
+9. Extraction coverage must account for every body text character exactly once as editable text, a protected atom, an explicitly preserved span, or unchanged ordinary whitespace. Markup, comments, and processing instructions are structural data, not linguistic text. No eligible text may disappear between nested containers or section boundaries. A document with no linguistic text legitimately has no segments. Attributes and head content are excluded by the extraction rules, not silently missed by traversal.
 10. All parsing and reconstruction checks complete before reporting success or replacing an output EPUB. A structurally valid subset is not a complete translation. Future readers must bound JSON bytes, part counts, XHTML nodes, and nesting and reject limit violations without truncation; concrete implementation budgets do not grant permission to weaken these invariants or M0 limits.
 
 Errors must distinguish syntax, origin/version mismatch, control mismatch, coverage failure, unknown/duplicate/missing segment, marker multiplicity/topology/global atom order, ID-anchor placement, protected-space-in-text, and invalid character/part shape. Where known, diagnostics include original document path, section ID, segment ID, marker ID, and response part index. Whole-file syntax/origin failures may have no segment context. These diagnostic categories are implemented by the translation validator; no additional Rust error variants are required.
 
 ## XML, entities, whitespace, and Unicode
 
-The initial XHTML profile requires well-formed XML 1.0, UTF-8 (an optional BOM is preserved), an XHTML `html` root, and one `body`. It does not perform DTD validation or repair malformed markup. Legacy `center` and `font` are deliberately included because the reference book uses them despite its XHTML 1.1 declaration.
+XHTML requires well-formed XML 1.0, UTF-8 (an optional BOM is preserved), an XHTML `html` root, and one `body`. Minami does not perform DTD validation or repair malformed markup. Legacy `center` and `font` are deliberately included because the reference book uses them despite its XHTML 1.1 declaration.
 
-A DOCTYPE may be absent or identify XHTML 1.1 with public ID `-//W3C//DTD XHTML 1.1//EN` and system ID `http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd` (the HTTPS spelling is also accepted). No DTD is fetched. Internal subsets, entity declarations, `xml:base`, unsupported encodings, and unknown named entities are rejected. Without a DTD, only XML's five predefined named entities and numeric references are accepted. With the recognized XHTML 1.1 declaration, the one additional offline alias is `nbsp` → U+00A0. This is a limited compatibility profile, not a general XHTML entity resolver.
+A DOCTYPE may be absent or identify XHTML 1.1 with public ID `-//W3C//DTD XHTML 1.1//EN` and system ID `http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd` (the HTTPS spelling is also accepted). No DTD is fetched. Internal subsets, entity declarations, `xml:base`, unsupported encodings, and unknown named entities are rejected. Without a DTD, only XML's five predefined named entities and numeric references are accepted. With the recognized XHTML 1.1 declaration, the one additional offline alias is `nbsp` → U+00A0. This is a limited entity subset, not a general XHTML entity resolver.
 
 Source text uses decoded character values, not literal `&amp;`/`&#...;` spellings. XML line-ending handling is applied to linguistic text. CDATA inside a segment becomes ordinary text; its entity-like spellings are literal characters. Entity handling must respect XML lexical contexts, not globally replace strings inside comments or CDATA. Original byte positions must still refer to the unnormalized buffer: preprocessing `&nbsp;`, resolving references, CRLF normalization, and multibyte characters must never shift stored coordinates. A future XHTML reader needs lexical spans or a reversible position map; normalized parser text alone is insufficient. Existing structural OPF/NCX parsing must not be relaxed to implement this XHTML-specific policy.
 
 Each original U+00A0, U+2007, or U+202F occurrence in editable flow, unless already inside an opaque subtree, is a protected atom (`nbsp` for U+00A0, `space` otherwise), regardless of whether written literally or as an entity. This preserves nonbreaking-space identity and its original spelling. Other ordinary spaces, tabs, and newlines inside a segment are editable linguistic text. `br` is a protected atom, not a segment boundary. Whitespace outside edited intervals stays byte-identical. Empty nodes are preserved, not turned into fabricated text.
 
-In `epub2-xhtml-v1`, none of these three scalars may occur in a `text` part of generated `source.json`, a response, or the validated parts passed to reconstruction. Check decoded JSON strings: literal UTF-8 and `\u00a0`/`\u2007`/`\u202f` escapes are equivalent. A response cannot introduce a new occurrence, replace an original atom with a literal scalar, or invent a new atom ID. Do not silently turn it into an ordinary space or repair its representation. Ordinary spaces, tabs, and newlines retain the existing XML rules. Immutable attributes, opaque spans, and other control strings remain original data, outside this `text`-part restriction.
+None of these three scalars may occur in a `text` part of generated `source.json`, a response, or the validated parts passed to reconstruction. Check decoded JSON strings: literal UTF-8 and `\u00a0`/`\u2007`/`\u202f` escapes are equivalent. A response cannot introduce a new occurrence, replace an original atom with a literal scalar, or invent a new atom ID. Do not silently turn it into an ordinary space or repair its representation. Ordinary spaces, tabs, and newlines retain the existing XML rules. Immutable attributes, opaque spans, and other control strings remain original data, outside this `text`-part restriction.
 
 Target character data escapes `&`, `<`, and `>`; U+000D is emitted as `&#13;` to avoid literal CR normalization. Other permitted characters are UTF-8. XML tags are never parsed out of target strings. JSON escaping is a separate step; JSON `"\u00e9"` and literal `"é"` denote the same character. XML rules are grounded in [XML 1.0 character data, references, and line endings](https://www.w3.org/TR/xml/); JSON syntax and string interoperability follow [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259). The historical declaration is described by [XHTML 1.1](https://www.w3.org/TR/xhtml11/).
 
 ## Reconstruction requirements
 
-The future builder requires the operator-selected original EPUB, matching regenerated control, and a complete validated response set. It must:
+The builder requires the operator-selected original EPUB, matching regenerated control, and a complete validated response set. It:
 
-1. Reuse M0 ZIP/package/navigation validation, then regenerate the X mapping with the selected profile and compare control. Digesting, mapping, and copying must refer to the same source byte snapshot; a changed source invalidates the operation. Reject unsupported profiles rather than reconstructing with a newer segmentation rule.
+1. Reuse M0 ZIP/package/navigation validation, then regenerate the X mapping and compare control. Digesting, mapping, and copying refer to the same source byte snapshot; a changed source invalidates the operation.
 2. For each target segment, first validate global atom order, ID-anchor placement, and the ban on protected-space scalars in decoded `text`, together with all other invariants. Then create only its replacement bytes: escaped target text plus the original paired start/end tokens and complete atomic source spans, in validated target order. Never use tags or attributes supplied by the response or automatically repair a rejected response.
 3. Combine disjoint replacements against the original document coordinates, either by copying source slices in ascending order or applying changes in descending order. Never reuse old offsets against an already length-modified document.
 4. Parse the result under the same offline XML policy and verify its protected topology, attributes, global atom order, document IDs, ID-anchor relative placement, and NCX boundary targets. Inline positions may move inside the authorized region only within these constraints; protected ancestors and references may not change. Full semantic validation of source hyperlinks, CSS, and translated meaning is not claimed.
-5. Keep all bytes outside replacement intervals unchanged. Keep other uncompressed resources, OPF, NCX, CSS, and images unchanged; only body text regions are authorized by this profile. Write a new EPUB and publish it only after all checks succeed, retaining the original on every failure.
+5. Keep all bytes outside replacement intervals unchanged. Keep other uncompressed resources, OPF, NCX, CSS, and images unchanged; only body text regions are authorized for replacement. Write a new EPUB and publish it only after all checks succeed, retaining the original on every failure.
 
 Three guarantees are distinct:
 
@@ -524,10 +525,10 @@ This is structural evidence for the proposal, not an extraction/rebuild test or 
 
 ## Limitations and deferred work
 
-- The profile is limited to the specified EPUB 2/XHTML vocabulary, UTF-8, and offline entity subset. EPUB 3, arbitrary DTDs/entities, `pre`/inherited `xml:space="preserve"`, MathML, ruby, form content, and other unknown constructs need explicit future support. Unsupported constructs fail extraction rather than yielding a complete-looking partial result.
-- Fragment targets requiring a mid-segment split are rejected. The profile does not infer chapter boundaries from typography, filenames, or headings absent from NCX.
+- Extraction supports the specified EPUB 2/XHTML vocabulary, UTF-8, and offline entity subset. EPUB 3, arbitrary DTDs/entities, `pre`/inherited `xml:space="preserve"`, MathML, ruby, form content, and other unknown constructs need explicit support. Unsupported constructs fail extraction rather than yielding a complete-looking partial result.
+- Fragment targets requiring a mid-segment split are rejected. Chapter boundaries are not inferred from typography, filenames, or headings absent from NCX.
 - All attributes, head text, OPF metadata, NCX labels, `pageList`, and `navList` remain untranslated. SVG/image text and textual attributes such as `alt`/`title` require an explicit extension, not silent translation under 1.0.
-- The initial profile prioritizes preservation of original protected spaces over introducing new nonbreaking spaces required by a target language. U+00A0/U+2007/U+202F are forbidden in `text`; only existing atoms can represent them. A future profile may change this policy through explicit versioning.
+- Extraction prioritizes preservation of original protected spaces over introducing new nonbreaking spaces required by a target language. U+00A0/U+2007/U+202F are forbidden in `text`; only existing atoms can represent them.
 - Internal/external hyperlink values are preserved; complete link-semantic auditing, computed CSS visibility/generated content, CSS whitespace/layout, and visual equivalence are not guaranteed. Translation can change line wrapping and pagination. Existing executable source content is preserved, not sanitized; target prose never becomes markup.
 - No structural validator can establish translation quality, detect an intentionally mislabeled but structurally compatible sentence, prove that emphasis still surrounds the semantically corresponding words, or guarantee an anchor's exact semantic position. Anchor identity, ancestry, and placement relative to protected structural events are checked; linguistic equivalence and complete link/reference semantics are not. Linguistic review remains external.
 - Parser APIs, lexical-mapping mechanics, and resource budgets are implementation details described in the architecture documentation. JSON Schema tooling, target-language metadata, and commands beyond extraction remain deferred. Such changes must not alter these identity/authority rules without versioning. Model orchestration and a configuration system remain outside extraction scope.

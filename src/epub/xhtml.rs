@@ -87,6 +87,68 @@ fn limit(path: &str, limit: &'static str) -> MinamiError {
     }
 }
 
+struct ValidatedElement {
+    start: usize,
+    namespace: String,
+    href: bool,
+    xml_base: bool,
+    preserve_space: bool,
+    id: Option<String>,
+    body_child: bool,
+}
+
+struct ValidatedDom {
+    is_xhtml_html: bool,
+    has_unsupported_root_element: bool,
+    has_unsupported_root_text: bool,
+    elements: Vec<ValidatedElement>,
+}
+
+fn validate_dom(source: &str) -> Result<ValidatedDom, String> {
+    let validation = roxmltree::Document::parse_with_options(
+        source,
+        roxmltree::ParsingOptions {
+            allow_dtd: true,
+            entity_resolver: None,
+            nodes_limit: MAX_NODES as u32,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let root = validation.root_element();
+    let has_unsupported_root_element = root.children().any(|child| {
+        child.is_element()
+            && !matches!(
+                (child.tag_name().namespace(), child.tag_name().name()),
+                (Some(XHTML_NS), "head" | "body")
+            )
+    });
+    let has_unsupported_root_text = root.children().any(|child| {
+        child.is_text()
+            && child
+                .text()
+                .is_some_and(|text| !text.chars().all(xml_space))
+    });
+    let elements = validation
+        .descendants()
+        .filter(|node| node.is_element())
+        .map(|node| ValidatedElement {
+            start: node.range().start,
+            namespace: node.tag_name().namespace().unwrap_or("").into(),
+            href: node.attribute("href").is_some(),
+            xml_base: node.attribute((roxmltree::NS_XML_URI, "base")).is_some(),
+            preserve_space: node.attribute((roxmltree::NS_XML_URI, "space")) == Some("preserve"),
+            id: node.attribute("id").map(str::to_owned),
+            body_child: node.tag_name().name() == "body" && node.parent() == Some(root),
+        })
+        .collect();
+    Ok(ValidatedDom {
+        is_xhtml_html: root.has_tag_name((XHTML_NS, "html")),
+        has_unsupported_root_element,
+        has_unsupported_root_text,
+        elements,
+    })
+}
+
 pub(crate) fn xml_char(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
 }
@@ -200,6 +262,7 @@ pub(crate) fn parse(source: &str, path: &str) -> Result<Document, MinamiError> {
     let mut chunk_count = 0usize;
     let mut attribute_count = 0usize;
     let mut element_attributes = 0usize;
+    let mut max_depth = 0usize;
     for result in Tokenizer::from(source) {
         let token = result.map_err(|source| MinamiError::MalformedXml {
             resource: path.into(),
@@ -287,6 +350,7 @@ pub(crate) fn parse(source: &str, path: &str) -> Result<Document, MinamiError> {
                             return Err(limit(path, "128 XHTML nesting levels"));
                         }
                         stack.push(index);
+                        max_depth = max_depth.max(stack.len());
                     }
                 }
                 ElementEnd::Close(_, _) => {
@@ -370,39 +434,38 @@ pub(crate) fn parse(source: &str, path: &str) -> Result<Document, MinamiError> {
         resource: path.into(),
         source: Box::new(source),
     })?;
-    let validation = roxmltree::Document::parse_with_options(
-        &normalized,
-        roxmltree::ParsingOptions {
-            allow_dtd: true,
-            entity_resolver: None,
-            nodes_limit: MAX_NODES as u32,
-        },
-    )
-    .map_err(|source| MinamiError::MalformedXml {
-        resource: path.into(),
-        source: Box::new(source),
-    })?;
-    if !validation.root_element().has_tag_name((XHTML_NS, "html")) {
+    // roxmltree parses recursively, so give deeply nested XHTML a larger worker stack.
+    let validation = if max_depth > 32 {
+        let source = normalized.clone();
+        std::thread::Builder::new()
+            .name("minami-xhtml-validation".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || validate_dom(&source))
+            .map_err(|source| MinamiError::Io {
+                operation: "starting deep XHTML validation",
+                resource: path.into(),
+                source,
+            })?
+            .join()
+            .map_err(|_| malformed(path, "deep XHTML validation worker panicked"))?
+    } else {
+        validate_dom(&normalized)
+    }
+    .map_err(|detail| malformed(path, detail))?;
+    if !validation.is_xhtml_html {
         return Err(super::invalid(path, "expected html in the XHTML namespace"));
     }
-    for child in validation.root_element().children() {
-        if child.is_element()
-            && !matches!(
-                (child.tag_name().namespace(), child.tag_name().name()),
-                (Some(XHTML_NS), "head" | "body")
-            )
-        {
-            return Err(super::unsupported(
-                path,
-                "unclassified element outside XHTML head/body",
-            ));
-        }
-        if child.is_text() && child.text().is_some_and(|t| !t.chars().all(xml_space)) {
-            return Err(super::unsupported(
-                path,
-                "unclassified text outside XHTML head/body",
-            ));
-        }
+    if validation.has_unsupported_root_element {
+        return Err(super::unsupported(
+            path,
+            "unclassified element outside XHTML head/body",
+        ));
+    }
+    if validation.has_unsupported_root_text {
+        return Err(super::unsupported(
+            path,
+            "unclassified text outside XHTML head/body",
+        ));
     }
     let by_start: BTreeMap<_, _> = nodes
         .iter()
@@ -412,33 +475,34 @@ pub(crate) fn parse(source: &str, path: &str) -> Result<Document, MinamiError> {
         .collect();
     let mut ids = BTreeMap::new();
     let mut bodies = Vec::new();
-    for node in validation.descendants().filter(|n| n.is_element()) {
+    for validated in validation.elements {
         let index = *by_start
-            .get(&node.range().start)
+            .get(&validated.start)
             .ok_or_else(|| malformed(path, "lexical element position mismatch"))?;
         let Kind::Element(element) = &mut nodes[index].kind else {
             return Err(malformed(path, "missing lexical element"));
         };
-        element.namespace = node.tag_name().namespace().unwrap_or("").into();
-        element.href = node.attribute("href").is_some();
-        if node.attribute((roxmltree::NS_XML_URI, "base")).is_some() {
+        let is_xhtml = validated.namespace == XHTML_NS;
+        element.namespace = validated.namespace;
+        element.href = validated.href;
+        if validated.xml_base {
             return Err(super::unsupported(path, "xml:base"));
         }
-        if element.namespace == XHTML_NS {
-            if node.attribute((roxmltree::NS_XML_URI, "space")) == Some("preserve") {
+        if is_xhtml {
+            if validated.preserve_space {
                 return Err(super::unsupported(path, "xml:space=preserve"));
             }
-            if let Some(id) = node.attribute("id") {
+            if let Some(id) = validated.id {
                 if id.trim().is_empty() {
                     return Err(super::invalid(path, "empty XHTML id"));
                 }
-                if ids.insert(id.to_owned(), index).is_some() {
+                if ids.insert(id.clone(), index).is_some() {
                     return Err(super::ambiguous(path, format!("duplicate XHTML id {id}")));
                 }
-                element.id = Some(id.into());
+                element.id = Some(id);
             }
             if element.name == "body" {
-                if node.parent() != Some(validation.root_element()) {
+                if !validated.body_child {
                     return Err(super::invalid(path, "body must be a direct child of html"));
                 }
                 bodies.push(index);

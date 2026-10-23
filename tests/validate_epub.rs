@@ -227,7 +227,7 @@ fn v02_v03_malformed_and_non_pure_json_are_rejected() {
 fn v04_v05_v06_unknown_missing_and_wrong_typed_fields_are_rejected() {
     let case = Case::default();
     let mut envelope_unknown = case.source.clone();
-    envelope_unknown["profile"] = json!("epub2-xhtml-v1");
+    envelope_unknown["unknown"] = json!(true);
     let mut segment_unknown = case.source.clone();
     segment_unknown["segments"][0]["range"] = json!([0, 1]);
     let mut part_unknown = case.source.clone();

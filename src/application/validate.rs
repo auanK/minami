@@ -135,9 +135,9 @@ fn validate_epub_internal(
         });
     }
 
-    let (data, archive) = extract::extract_with_archive(epub)?;
     let control_resource = control.display().to_string();
     let supplied = read_json(control, MAX_JSON_BYTES, "64 MiB control file")?;
+    let (data, archive) = extract::extract_with_archive(epub)?;
     let regenerated_bytes = extract::encode(&data.control)?;
     let regenerated = parse_json(&regenerated_bytes, "regenerated control")?;
     if supplied != regenerated {

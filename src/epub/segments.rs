@@ -41,10 +41,18 @@ struct Analysis {
 }
 
 fn contains_link(doc: &Document, index: usize) -> bool {
-    let node = &doc.nodes[index];
-    node.element()
-        .is_some_and(|e| e.namespace == XHTML_NS && e.name == "a" && e.href)
-        || node.children.iter().any(|i| contains_link(doc, *i))
+    let mut pending = vec![index];
+    while let Some(index) = pending.pop() {
+        let node = &doc.nodes[index];
+        if node
+            .element()
+            .is_some_and(|e| e.namespace == XHTML_NS && e.name == "a" && e.href)
+        {
+            return true;
+        }
+        pending.extend(&node.children);
+    }
+    false
 }
 
 fn structural_child(parent: &str, child: &str) -> bool {
@@ -64,108 +72,116 @@ fn structural_child(parent: &str, child: &str) -> bool {
 
 fn analyze(
     doc: &Document,
-    index: usize,
+    root: usize,
     plan: &mut Analysis,
     path: &str,
 ) -> Result<bool, MinamiError> {
-    let node = &doc.nodes[index];
-    let Some(e) = node.element() else {
-        let has_text = match &node.kind {
-            Kind::Text(chunks) => chunks
-                .iter()
-                .any(|c| c.text.chars().any(|c| !xml_space(c) && !protected_space(c))),
-            _ => false,
-        };
-        plan.text[index] = has_text;
-        return Ok(has_text);
-    };
-    let class = if e.namespace == "http://www.w3.org/2000/svg" && e.name == "svg" {
-        Class::Atom
-    } else if e.namespace != XHTML_NS {
-        return Err(super::unsupported(
-            path,
-            format!(
-                "foreign element {{{}}}{} at byte {}",
-                e.namespace, e.name, node.span.0
-            ),
-        ));
-    } else {
-        match e.name.as_str() {
-            "body" | "div" | "center" | "blockquote" | "p" | "h1" | "h2" | "h3" | "h4" | "h5"
-            | "h6" | "li" | "dt" | "dd" | "td" | "th" | "caption" => Class::Flow,
-            "ol" | "ul" | "dl" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "colgroup" => {
-                Class::Structural
-            }
-            "i" | "b" | "em" | "strong" | "span" | "a" | "sup" | "sub" | "big" | "small"
-            | "font" => {
-                if matches!(e.name.as_str(), "sup" | "sub") && contains_link(doc, index) {
-                    Class::Atom
-                } else {
-                    Class::Inline
-                }
-            }
-            "img" | "br" | "hr" | "col" => {
-                if !node.children.is_empty() {
-                    return Err(super::unsupported(
-                        path,
-                        format!("nonempty {} at byte {}", e.name, node.span.0),
-                    ));
-                }
-                if matches!(e.name.as_str(), "hr" | "col") {
-                    Class::Boundary
-                } else {
-                    Class::Atom
-                }
-            }
-            "script" | "style" => Class::Boundary,
-            _ => {
+    let mut pending = vec![(root, false)];
+    while let Some((index, visited)) = pending.pop() {
+        let node = &doc.nodes[index];
+        if !visited {
+            let Some(e) = node.element() else {
+                plan.text[index] = match &node.kind {
+                    Kind::Text(chunks) => chunks
+                        .iter()
+                        .any(|c| c.text.chars().any(|c| !xml_space(c) && !protected_space(c))),
+                    _ => false,
+                };
+                continue;
+            };
+            let class = if e.namespace == "http://www.w3.org/2000/svg" && e.name == "svg" {
+                Class::Atom
+            } else if e.namespace != XHTML_NS {
                 return Err(super::unsupported(
                     path,
-                    format!("element {} at byte {}", e.name, node.span.0),
+                    format!(
+                        "foreign element {{{}}}{} at byte {}",
+                        e.namespace, e.name, node.span.0
+                    ),
                 ));
+            } else {
+                match e.name.as_str() {
+                    "body" | "div" | "center" | "blockquote" | "p" | "h1" | "h2" | "h3" | "h4"
+                    | "h5" | "h6" | "li" | "dt" | "dd" | "td" | "th" | "caption" => Class::Flow,
+                    "ol" | "ul" | "dl" | "table" | "thead" | "tbody" | "tfoot" | "tr"
+                    | "colgroup" => Class::Structural,
+                    name if crate::x::is_inline_element(name) => {
+                        if matches!(name, "sup" | "sub") && contains_link(doc, index) {
+                            Class::Atom
+                        } else {
+                            Class::Inline
+                        }
+                    }
+                    "img" | "br" | "hr" | "col" => {
+                        if !node.children.is_empty() {
+                            return Err(super::unsupported(
+                                path,
+                                format!("nonempty {} at byte {}", e.name, node.span.0),
+                            ));
+                        }
+                        if matches!(e.name.as_str(), "hr" | "col") {
+                            Class::Boundary
+                        } else {
+                            Class::Atom
+                        }
+                    }
+                    "script" | "style" => Class::Boundary,
+                    _ => {
+                        return Err(super::unsupported(
+                            path,
+                            format!("element {} at byte {}", e.name, node.span.0),
+                        ));
+                    }
+                }
+            };
+            plan.classes[index] = class;
+            if matches!(class, Class::Atom | Class::Boundary) {
+                continue;
             }
-        }
-    };
-    plan.classes[index] = class;
-    if matches!(class, Class::Atom | Class::Boundary) {
-        return Ok(false);
-    }
-    let mut has_text = false;
-    for &child in &node.children {
-        let child_text = analyze(doc, child, plan, path)?;
-        if class == Class::Inline
-            && doc.nodes[child].element().is_some()
-            && !matches!(plan.classes[child], Class::Inline | Class::Atom)
-        {
-            return Err(super::unsupported(
-                path,
-                format!(
-                    "block/boundary inside inline {} at byte {}",
-                    e.name, node.span.0
-                ),
-            ));
-        }
-        if class == Class::Structural {
-            match &doc.nodes[child].kind {
-                Kind::Element(c)
-                    if c.namespace == XHTML_NS && structural_child(&e.name, &c.name) => {}
-                Kind::Comment | Kind::Pi => {}
-                Kind::Text(chunks) if chunks.iter().all(|c| c.text.chars().all(xml_space)) => {}
-                _ => {
+            pending.push((index, true));
+            pending.extend(node.children.iter().rev().map(|child| (*child, false)));
+        } else {
+            let element = node.element().expect("visited nodes are elements");
+            let class = plan.classes[index];
+            let mut has_text = false;
+            for &child in &node.children {
+                if class == Class::Inline
+                    && doc.nodes[child].element().is_some()
+                    && !matches!(plan.classes[child], Class::Inline | Class::Atom)
+                {
                     return Err(super::unsupported(
                         path,
                         format!(
-                            "unexpected content inside {} at byte {}",
-                            e.name, doc.nodes[child].span.0
+                            "block/boundary inside inline {} at byte {}",
+                            element.name, node.span.0
                         ),
                     ));
                 }
+                if class == Class::Structural {
+                    match &doc.nodes[child].kind {
+                        Kind::Element(child_element)
+                            if child_element.namespace == XHTML_NS
+                                && structural_child(&element.name, &child_element.name) => {}
+                        Kind::Comment | Kind::Pi => {}
+                        Kind::Text(chunks)
+                            if chunks.iter().all(|c| c.text.chars().all(xml_space)) => {}
+                        _ => {
+                            return Err(super::unsupported(
+                                path,
+                                format!(
+                                    "unexpected content inside {} at byte {}",
+                                    element.name, doc.nodes[child].span.0
+                                ),
+                            ));
+                        }
+                    }
+                }
+                has_text |= plan.text[child];
             }
+            plan.text[index] = has_text;
         }
-        has_text |= child_text;
     }
-    plan.text[index] = has_text;
-    Ok(has_text)
+    Ok(plan.text[root])
 }
 
 fn append_text(parts: &mut Vec<Part>, text: &str) {
@@ -364,12 +380,47 @@ fn walk(
     group(doc, &current, plan, output, path)
 }
 
+fn check_inline_depth(doc: &Document, plan: &Analysis, path: &str) -> Result<(), MinamiError> {
+    let mut depth = vec![0usize; doc.nodes.len()];
+    let mut opaque = vec![false; doc.nodes.len()];
+    for (index, node) in doc.nodes.iter().enumerate() {
+        if let Some(parent) = node.parent {
+            depth[index] = depth[parent];
+            if opaque[parent]
+                || matches!(plan.classes[parent], Class::Atom | Class::Boundary)
+                || (plan.classes[parent] == Class::Inline && !plan.text[parent])
+            {
+                opaque[index] = true;
+                continue;
+            }
+        }
+        match plan.classes[index] {
+            Class::Atom | Class::Boundary => opaque[index] = true,
+            Class::Inline if plan.text[index] => {
+                if depth[index] >= 64 {
+                    return Err(MinamiError::LimitExceeded {
+                        resource: path.into(),
+                        limit: "64 paired inline nesting levels",
+                    });
+                }
+                depth[index] += 1;
+            }
+            Class::Inline => {
+                opaque[index] = true;
+            }
+            Class::Flow | Class::Structural => {}
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn extract(doc: &Document, path: &str) -> Result<Segments, MinamiError> {
     let mut plan = Analysis {
         classes: vec![Class::Atom; doc.nodes.len()],
         text: vec![false; doc.nodes.len()],
     };
     analyze(doc, doc.body, &mut plan, path)?;
+    check_inline_depth(doc, &plan, path)?;
     let mut output = Segments {
         segments: Vec::new(),
         preserved: Vec::new(),

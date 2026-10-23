@@ -89,13 +89,13 @@ fn role(doc: &Document, index: &Index, node_index: usize, path: &str) -> Result<
         "ol" | "ul" | "dl" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "colgroup" => {
             Role::Structural
         }
-        "i" | "b" | "em" | "strong" | "span" | "a" | "sup" | "sub" | "big" | "small" | "font"
-            if !matches!(element.name.as_str(), "sup" | "sub")
-                || !index.subtree_has_link[node_index] =>
-        {
-            Role::Inline
+        name if x::is_inline_element(name) => {
+            if matches!(name, "sup" | "sub") && index.subtree_has_link[node_index] {
+                Role::Atom
+            } else {
+                Role::Inline
+            }
         }
-        "sup" | "sub" => Role::Atom,
         "img" | "br" => {
             if !node.children.is_empty() {
                 return Err(invalid(
@@ -1733,7 +1733,7 @@ mod tests {
     }
 
     #[test]
-    fn c09_c10_profile_exclusions_are_not_coverage_failures() {
+    fn c09_c10_unsupported_content_is_not_counted_as_coverage() {
         for body in ["", "<p> </p>", "<div><br/></div>"] {
             let (doc, data) = valid(body);
             assert!(data.source.segments.is_empty(), "{body}");

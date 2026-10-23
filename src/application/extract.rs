@@ -300,9 +300,8 @@ fn from_snapshot_with(
     mut tamper: impl FnMut(&mut Extraction, usize),
 ) -> Result<(Extraction, archive::EpubArchive), MinamiError> {
     let extraction_id = hex(&Sha256::digest(format!(
-        "minami-x\n{}\n{}\n{digest}\n",
-        x::VERSION,
-        x::PROFILE
+        "minami-x\n{}\n{digest}\n",
+        x::VERSION
     )));
     let mut archive = archive::from_file(file, resource)?;
     let package_path = package::locate(&mut archive)?;
@@ -311,7 +310,6 @@ fn from_snapshot_with(
     let mut result = Extraction {
         control: Control {
             format_version: x::VERSION,
-            profile: x::PROFILE,
             extraction_id: extraction_id.clone(),
             source: x::Origin {
                 epub_sha256: digest,
@@ -585,10 +583,9 @@ mod tests {
         let digest = hash(fs::read(&f.path).unwrap());
         let data = extract_data(&f.path).unwrap();
         assert_eq!(data.control.source.epub_sha256, digest);
-        let expected = hash(format!("minami-x\n1.0\nepub2-xhtml-v1\n{digest}\n"));
+        let expected = hash(format!("minami-x\n1.0\n{digest}\n"));
         assert_eq!(data.control.extraction_id, expected);
         assert_eq!(data.source.extraction_id, expected);
-        assert_eq!(data.control.profile, "epub2-xhtml-v1");
     }
 
     #[test]

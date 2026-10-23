@@ -4,12 +4,28 @@ use crate::epub::xhtml::ByteSpan;
 use crate::{NavigationEntry, SpineEntry};
 
 pub(crate) const VERSION: &str = "1.0";
-pub(crate) const PROFILE: &str = "epub2-xhtml-v1";
+
+pub(crate) fn is_inline_element(name: &str) -> bool {
+    matches!(
+        name,
+        "i" | "b"
+            | "em"
+            | "strong"
+            | "span"
+            | "a"
+            | "sup"
+            | "sub"
+            | "big"
+            | "small"
+            | "font"
+            | "del"
+            | "s"
+    )
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Control {
     pub format_version: &'static str,
-    pub profile: &'static str,
     pub extraction_id: String,
     pub source: Origin,
     pub spine: Vec<SpineEntry>,
