@@ -181,6 +181,181 @@ fn extraction_accepts_del_and_s_as_inline_markers_with_original_spans() {
 }
 
 #[test]
+fn u_extracts_translates_and_rebuilds_with_original_tag_bytes() {
+    let body = "<p>Before <u class='important' data-k=\"keep\">underlined text</u> after.</p>";
+    let epub = book(body);
+    let original = fs::read(&epub.path).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work-u");
+    success(&extract(&epub.path, &work, None));
+
+    let control_path = work.join("control.json");
+    let control = read_json(&control_path);
+    let mut response = read_json(&work.join("source.json"));
+    assert_eq!(
+        response["segments"][0]["parts"],
+        json!([
+            {"text":"Before "},
+            {"open":"u1"},
+            {"text":"underlined text"},
+            {"close":"u1"},
+            {"text":" after."}
+        ])
+    );
+
+    let marker = control["segments"][0]["markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|marker| marker["id"] == "u1")
+        .unwrap();
+    let original_xhtml = wrap(body);
+    let open = marker["open"].as_array().unwrap();
+    let close = marker["close"].as_array().unwrap();
+    assert_eq!(
+        &original_xhtml[open[0].as_u64().unwrap() as usize..open[1].as_u64().unwrap() as usize],
+        "<u class='important' data-k=\"keep\">"
+    );
+    assert_eq!(
+        &original_xhtml[close[0].as_u64().unwrap() as usize..close[1].as_u64().unwrap() as usize],
+        "</u>"
+    );
+
+    response["segments"][0]["parts"] = json!([
+        {"text":"Antes "},
+        {"open":"u1"},
+        {"text":"texto sublinhado"},
+        {"close":"u1"},
+        {"text":" depois."}
+    ]);
+    let translated = root.path().join("translated.json");
+    write_json(&translated, &response);
+    success(&validate(
+        &epub.path,
+        &control_path,
+        std::slice::from_ref(&translated),
+        None,
+    ));
+
+    let output = root.path().join("translated.epub");
+    success(&build(&epub.path, &control_path, &translated, &output));
+    let resources = entries_by_name(&output);
+    let rebuilt_body = String::from_utf8(resources[BODY].clone()).unwrap();
+    assert!(rebuilt_body.contains(
+        "<p>Antes <u class='important' data-k=\"keep\">texto sublinhado</u> depois.</p>"
+    ));
+    for (name, bytes) in entries_by_name(&epub.path) {
+        if name != BODY {
+            assert_eq!(resources[&name], bytes, "{name}");
+        }
+    }
+    assert_eq!(fs::read(&epub.path).unwrap(), original);
+
+    response["segments"][0]["parts"] = json!([
+        {"open":"u1"},
+        {"text":"texto sublinhado"},
+        {"close":"u1"},
+        {"text":" depois. Antes"}
+    ]);
+    let repositioned = root.path().join("repositioned.json");
+    write_json(&repositioned, &response);
+    success(&validate(
+        &epub.path,
+        &control_path,
+        std::slice::from_ref(&repositioned),
+        None,
+    ));
+}
+
+#[test]
+fn u_nesting_empty_subtrees_and_invalid_response_markers_follow_inline_rules() {
+    let body = "<p><u class='outer'>underlined <i>italic <b>bold <span>span <del>deleted</del></span></b></i></u> tail</p><p><u></u> visible</p>";
+    let epub = book(body);
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work-u-nesting");
+    success(&extract(&epub.path, &work, None));
+    let source = read_json(&work.join("source.json"));
+    assert_eq!(
+        source["segments"][0]["parts"],
+        json!([
+            {"open":"u1"},
+            {"text":"underlined "},
+            {"open":"i2"},
+            {"text":"italic "},
+            {"open":"b3"},
+            {"text":"bold "},
+            {"open":"span4"},
+            {"text":"span "},
+            {"open":"del5"},
+            {"text":"deleted"},
+            {"close":"del5"},
+            {"close":"span4"},
+            {"close":"b3"},
+            {"close":"i2"},
+            {"close":"u1"},
+            {"text":" tail"}
+        ])
+    );
+    assert_eq!(
+        source["segments"][1]["parts"],
+        json!([{"atom":"u1"},{"text":" visible"}])
+    );
+
+    let control = work.join("control.json");
+    let validate_response = |name: &str, response: &Value| {
+        let path = root.path().join(name);
+        write_json(&path, response);
+        validate(&epub.path, &control, std::slice::from_ref(&path), None)
+    };
+
+    let mut missing = source.clone();
+    missing["segments"][0]["parts"] = json!([{"text":"underlined italic bold span deleted tail"}]);
+    assert!(
+        !validate_response("u-missing.json", &missing)
+            .status
+            .success()
+    );
+
+    let mut duplicate = source.clone();
+    duplicate["segments"][0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .insert(1, json!({"open":"u1"}));
+    assert!(
+        !validate_response("u-duplicate.json", &duplicate)
+            .status
+            .success()
+    );
+
+    let mut unknown = source.clone();
+    unknown["segments"][0]["parts"][0]["open"] = json!("u99");
+    unknown["segments"][0]["parts"][14]["close"] = json!("u99");
+    assert!(
+        !validate_response("u-unknown.json", &unknown)
+            .status
+            .success()
+    );
+
+    let mut bad_nesting = source;
+    bad_nesting["segments"][0]["parts"] = json!([
+        {"open":"u1"}, {"open":"i2"}, {"text":"text"},
+        {"close":"u1"}, {"close":"i2"}, {"text":" tail"}
+    ]);
+    assert!(
+        !validate_response("u-bad-nesting.json", &bad_nesting)
+            .status
+            .success()
+    );
+
+    let unsupported = book("<p><ruby>Unknown tag</ruby></p>");
+    let destination = root.path().join("unknown-element");
+    let result = extract(&unsupported.path, &destination, None);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("element ruby"));
+    assert!(!destination.exists());
+}
+
+#[test]
 fn validation_and_reconstruction_keep_del_s_tags_attributes_and_resources() {
     let body = "<p class='p'><del class='strike' data-k='keep'>gone</del> after</p><p><s style='text-decoration:line-through'>old</s> visible</p>";
     let epub = book(body);

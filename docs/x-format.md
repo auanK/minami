@@ -6,7 +6,7 @@ Status: normative contract 1.0. M0 inspection, extraction of `control.json` and 
 
 X separates translation content from the information needed to put it back into an EPUB. Minami identifies and maps content; an external translator supplies text. The translator never supplies authoritative XHTML, attributes, resource paths, or reconstruction instructions.
 
-The serialization is JSON. Extraction uses the existing EPUB 2 ZIP, package, spine, and NCX readers; it adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. Paired inline `<del>` and `<s>` elements are supported alongside the other documented XHTML elements. ZIP metadata policy and implementation budgets are documented in [architecture](architecture.md) and [development](development.md).
+The serialization is JSON. Extraction uses the existing EPUB 2 ZIP, package, spine, and NCX readers; it adds no parallel EPUB reader and does not change `InspectionReport` or the existing inspection API. The complete XHTML vocabulary is listed below. ZIP metadata policy and implementation budgets are documented in [architecture](architecture.md) and [development](development.md).
 
 The words **must**, **must not**, and **reject** below define the unchanged contract for extraction, coverage auditing, structural translation validation, reconstruction, and the builder. References below to future implementation preserve the original specification's historical wording.
 
@@ -94,13 +94,13 @@ The supported vocabulary is explicit:
 | --- | --- |
 | Flow containers | `body`, `div`, `center`, `blockquote`, `p`, `h1`–`h6`, `li`, `dt`, `dd`, `td`, `th`, `caption` |
 | Structural containers | `ol`, `ul`, `dl`, `table`, `thead`, `tbody`, `tfoot`, `tr`, `colgroup`; recurse without joining different children |
-| Paired inline elements | `i`, `b`, `em`, `strong`, `span`, `a`, `sup`, `sub`, `big`, `small`, `font`, `del`, `s`, except the opaque cases below |
+| Paired inline elements | `i`, `b`, `em`, `strong`, `span`, `a`, `sup`, `sub`, `big`, `small`, `font`, `del`, `s`, `u`, except the opaque cases below |
 | Atomic content | `br`, `img`, a complete SVG subtree, comments, processing instructions, empty inline subtrees, protected spaces, and a complete `sup`/`sub` containing a link |
 | Preserved boundaries | `hr`, `col`, opaque `script`/`style` subtrees; none supplies editable text |
 
 Within each flow container, a maximal consecutive group of direct text and inline/atomic children is one unit. A block or structural child ends the group and is traversed independently. This covers text directly in a `center`, a list item, a table cell, or either side of a nested table without extracting parent and child text twice. Paired inline elements may contain only supported inline/atomic content, not blocks.
 
-`<del>` and `<s>` use paired markers like the other supported inline elements. Their text is editable, while their original opening and closing tag bytes, attributes, and nesting are retained during reconstruction. Their visual styling can vary between EPUB readers.
+Paired inline elements use markers to expose their text for translation while retaining original opening and closing tag bytes, attributes, and nesting during reconstruction. Visual styling can vary between EPUB readers.
 
 Structural child relationships are `ol`/`ul` → `li`; `dl` → `dt`/`dd`; `table` → `caption`/`col`/`colgroup`/`thead`/`tbody`/`tfoot`/`tr`; `thead`/`tbody`/`tfoot` → `tr`; `tr` → `td`/`th`; and `colgroup` → `col`. Whitespace, comments, and processing instructions between those children are preserved. Unexpected direct linguistic text or other children are rejected rather than discarded. Unknown elements/namespaces with unclassified content are unsupported, not guessed to be inline or silently skipped.
 

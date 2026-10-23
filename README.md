@@ -20,6 +20,6 @@ minami validate book.epub --control work/control.json --translation translated.j
 minami build book.epub --control work/control.json --translation translated.json --output translated.epub
 ```
 
-Extraction supports XHTML `<del>` and `<s>` elements as paired inline tags by default, preserving their original tags and attributes when rebuilding. Unknown XHTML elements are rejected.
+Extraction translates supported XHTML inline content and preserves its original markup and attributes during reconstruction. Unknown XHTML elements are rejected.
 
 For section batches and detailed usage, limits, and supported features, see [docs/development.md](docs/development.md). The [architecture](docs/architecture.md) and [X 1.0 contract](docs/x-format.md) describe the implementation and file format.

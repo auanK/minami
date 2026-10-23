@@ -26,7 +26,7 @@ cargo run --locked -- extract book.epub --output work/
 
 The output's parent directory must exist, and `work/` must not exist, even as an empty directory. Success creates exactly `control.json` and `source.json`, following [X 1.0](x-format.md), and leaves stdout empty. Errors go to stderr with a nonzero exit code. The EPUB is never modified. Before either file is staged, an independent audit compares the generated mapping with the lexical XHTML from the same bounded snapshot and rejects missing, duplicated, displaced, or structurally inconsistent content. Translation responses are produced externally.
 
-Extraction treats `<del>` and `<s>` as paired inline tags, translates their text, and retains their original tags, attributes, and nesting during reconstruction. Unknown XHTML elements are rejected.
+Extraction translates supported XHTML inline content and retains its original tags, attributes, and nesting during reconstruction. Unknown XHTML elements are rejected.
 
 To split the same extraction into section-scoped translation batches:
 

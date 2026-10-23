@@ -20,6 +20,7 @@ pub(crate) fn is_inline_element(name: &str) -> bool {
             | "font"
             | "del"
             | "s"
+            | "u"
     )
 }
 

@@ -922,7 +922,7 @@ mod tests {
 
     #[test]
     fn normative_control_and_source_example_match_exactly() {
-        let spec = include_str!("../../docs/x-format.md");
+        let spec = include_str!("../../docs/x-format.md").replace("\r\n", "\n");
         let raw = spec
             .split("```html\n")
             .nth(1)
